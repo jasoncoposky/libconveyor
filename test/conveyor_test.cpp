@@ -10,7 +10,6 @@
 #include <chrono>
 #include <atomic>
 #include <random>
-#include <iostream>
 
 // --- Mock Infrastructure ---
 static std::vector<char> g_mock_storage_data;
@@ -68,17 +67,14 @@ void reset_mock_storage() {
 // --- Test Cases ---
 
 void test_create_destroy() {
-    std::cout << "Running test_create_destroy..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     conveyor_t* conv = conveyor_create(1, O_RDWR, mock_ops, 1024, 1024);
     assert(conv != nullptr);
     conveyor_destroy(conv);
-    std::cout << "test_create_destroy PASSED" << std::endl;
 }
 
 void test_write_and_flush() {
-    std::cout << "Running test_write_and_flush..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     conveyor_t* conv = conveyor_create(1, O_WRONLY, mock_ops, 1024, 0);
@@ -93,11 +89,9 @@ void test_write_and_flush() {
 
     assert(g_mock_storage_data.size() == test_data.length());
     assert(std::string(g_mock_storage_data.data(), g_mock_storage_data.size()) == test_data);
-    std::cout << "test_write_and_flush PASSED" << std::endl;
 }
 
 void test_buffered_read() {
-    std::cout << "Running test_buffered_read..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     
@@ -114,11 +108,9 @@ void test_buffered_read() {
     assert(std::string(read_buffer.data()) == test_data);
 
     conveyor_destroy(conv);
-    std::cout << "test_buffered_read PASSED" << std::endl;
 }
 
 void test_fast_write_hiding() {
-    std::cout << "Running test_fast_write_hiding..." << std::endl;
     reset_mock_storage();
     g_simulate_slow_write = true;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
@@ -140,11 +132,9 @@ void test_fast_write_hiding() {
 
     assert(g_mock_storage_data.size() == test_data.length());
     assert(std::string(g_mock_storage_data.data(), g_mock_storage_data.size()) == test_data);
-    std::cout << "test_fast_write_hiding PASSED" << std::endl;
 }
 
 void test_fast_read_hiding() {
-    std::cout << "Running test_fast_read_hiding..." << std::endl;
     reset_mock_storage();
     g_simulate_slow_read = true;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
@@ -169,12 +159,10 @@ void test_fast_read_hiding() {
     assert(std::string(read_buffer.data()) == test_data);
 
     conveyor_destroy(conv);
-    std::cout << "test_fast_read_hiding PASSED" << std::endl;
 }
 
 
 void test_zero_byte_operations() {
-    std::cout << "Running test_zero_byte_operations..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     conveyor_t* conv = conveyor_create(1, O_RDWR, mock_ops, 1024, 1024);
@@ -188,11 +176,9 @@ void test_zero_byte_operations() {
 
     conveyor_destroy(conv);
     assert(g_mock_storage_data.empty());
-    std::cout << "test_zero_byte_operations PASSED" << std::endl;
 }
 
 void test_small_buffer_fragmentation() {
-    std::cout << "Running test_small_buffer_fragmentation..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     
@@ -220,11 +206,9 @@ void test_small_buffer_fragmentation() {
     assert(bytes_read == (ssize_t)test_data.length());
     assert(std::string(read_buffer.data(), read_buffer.size()) == test_data);
     conveyor_destroy(read_conv);
-    std::cout << "test_small_buffer_fragmentation PASSED" << std::endl;
 }
 
 void test_multithreaded_writes() {
-    std::cout << "Running test_multithreaded_writes..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     conveyor_t* conv = conveyor_create(1, O_WRONLY | O_APPEND, mock_ops, 1024, 0);
@@ -254,11 +238,9 @@ void test_multithreaded_writes() {
         expected_size += ("Thread" + std::to_string(i) + " writes this data.").length() * writes_per_thread;
     }
     assert(g_mock_storage_data.size() == expected_size);
-    std::cout << "test_multithreaded_writes PASSED" << std::endl;
 }
 
 void test_random_seek_stress() {
-    std::cout << "Running test_random_seek_stress..." << std::endl;
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     conveyor_t* conv = conveyor_create(1, O_RDWR, mock_ops, 256, 256);
@@ -300,11 +282,9 @@ void test_random_seek_stress() {
     conveyor_destroy(conv);
 
     assert(g_mock_storage_data == local_copy);
-    std::cout << "test_random_seek_stress PASSED" << std::endl;
 }
 
 void test_stats_collection() {
-    std::cout << "Running test_stats_collection..." << std::endl;
     reset_mock_storage();
     g_simulate_slow_write = true;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
@@ -329,26 +309,47 @@ void test_stats_collection() {
     assert(stats.avg_write_latency_ms == 0);
     
     conveyor_destroy(conv);
-    std::cout << "test_stats_collection PASSED" << std::endl;
+}
+
+void test_read_sees_unflushed_write() {
+    reset_mock_storage();
+    g_simulate_slow_write = true; // Ensure writeWorker is slow and writes stay in queue
+    storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
+    conveyor_t* conv = conveyor_create(1, O_RDWR, mock_ops, 100, 100); // Small buffers
+    assert(conv != nullptr);
+
+    std::string test_data = "ABCDE";
+    off_t write_offset = 0;
+    
+    // Write data, it should go to the queue
+    ssize_t bytes_written = conveyor_write(conv, test_data.c_str(), test_data.length());
+    assert(bytes_written == (ssize_t)test_data.length());
+
+    // Seek to the beginning of the written data
+    conveyor_lseek(conv, write_offset, SEEK_SET);
+
+    // Try to read the data back
+    std::vector<char> read_buffer(test_data.length() + 1, '\0');
+    ssize_t bytes_read = conveyor_read(conv, read_buffer.data(), test_data.length());
+    
+    assert(bytes_read == (ssize_t)test_data.length());
+    assert(std::string(read_buffer.data(), bytes_read) == test_data);
+
+    conveyor_destroy(conv);
 }
 
 int main() {
-    std::cout << "--- Running Basic Tests ---" << std::endl;
     test_create_destroy();
     test_write_and_flush();
     test_buffered_read();
-    
-    std::cout << "\n--- Running Latency-Hiding Tests ---" << std::endl;
     test_fast_write_hiding();
     test_fast_read_hiding();
-    
-    std::cout << "\n--- Running Corner Case and Stress Tests ---" << std::endl;
     test_zero_byte_operations();
     test_small_buffer_fragmentation();
     test_multithreaded_writes();
     test_random_seek_stress();
     test_stats_collection();
+    test_read_sees_unflushed_write(); // New test added here
 
-    std::cout << "\nAll tests passed!" << std::endl;
     return 0;
 }

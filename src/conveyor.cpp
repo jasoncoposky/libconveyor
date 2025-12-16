@@ -272,7 +272,20 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
     auto* impl = reinterpret_cast<libconveyor::ConveyorImpl*>(conv);
     if (!impl->read_buffer_enabled) { errno = EBADF; return LIBCONVEYOR_ERROR; }
     if (impl->stats.last_error_code.load() != 0) { errno = impl->stats.last_error_code.load(); return LIBCONVEYOR_ERROR; }
-    std::unique_lock<std::mutex> lock(impl->read_mutex);
+    
+    // Acquire both locks to ensure read-after-write consistency
+    std::unique_lock<std::mutex> read_lock(impl->read_mutex, std::defer_lock);
+    std::unique_lock<std::mutex> write_lock(impl->write_mutex, std::defer_lock);
+    std::lock(read_lock, write_lock);
+
+    // If there are pending writes, flush them to ensure read sees the latest data
+    if (impl->write_buffer_enabled && !impl->write_queue.empty()) {
+        impl->write_buffer_needs_flush = true;
+        impl->write_cv_consumer.notify_one();
+        impl->write_cv_producer.wait(write_lock, [&] { return impl->write_queue.empty() || impl->write_worker_stop_flag; });
+        impl->write_buffer_needs_flush = false;
+    }
+
     ssize_t total_read = 0;
     char* ptr = static_cast<char*>(buf);
     while (total_read < count && !impl->read_worker_stop_flag.load()) {
@@ -280,7 +293,7 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
             if (impl->read_eof_flag.load()) break;
             impl->read_worker_needs_fill = true;
             impl->read_cv_producer.notify_one();
-            impl->read_cv_consumer.wait(lock, [&]{ return impl->read_buffer.available_data() > 0 || impl->read_eof_flag.load() || impl->read_worker_stop_flag.load(); });
+            impl->read_cv_consumer.wait(read_lock, [&]{ return impl->read_buffer.available_data() > 0 || impl->read_eof_flag.load() || impl->read_worker_stop_flag.load(); });
             if (impl->read_buffer.available_data() == 0) break;
         }
         size_t read_now = impl->read_buffer.read(ptr + total_read, count - total_read);
