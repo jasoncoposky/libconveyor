@@ -1,0 +1,8 @@
+C:/Users/jason/playground/lib/libconveyor/build/CMakeFiles/conveyor.dir
+C:/Users/jason/playground/lib/libconveyor/build/CMakeFiles/INSTALL.dir
+C:/Users/jason/playground/lib/libconveyor/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/jason/playground/lib/libconveyor/build/CMakeFiles/ZERO_CHECK.dir
+C:/Users/jason/playground/lib/libconveyor/build/test/CMakeFiles/conveyor_basic_test.dir
+C:/Users/jason/playground/lib/libconveyor/build/test/CMakeFiles/toy_model_test.dir
+C:/Users/jason/playground/lib/libconveyor/build/test/CMakeFiles/INSTALL.dir
+C:/Users/jason/playground/lib/libconveyor/build/test/CMakeFiles/ALL_BUILD.dir

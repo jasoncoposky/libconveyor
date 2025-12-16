@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/jason/playground/lib/libconveyor/build/cmake_install.cmake",
+		"C:/Users/jason/playground/lib/libconveyor/build/test/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
