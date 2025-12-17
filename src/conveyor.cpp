@@ -65,170 +65,126 @@ struct ConveyorImpl {
         std::atomic<int> last_error_code{0};
     } stats;
     
+    // Constructor
     ConveyorImpl(size_t w_cap, size_t r_cap) 
-        : write_buffer_capacity(w_cap), // Store capacity for queue
-          read_buffer(r_cap) {}
+        : write_buffer_capacity(w_cap), 
+          read_buffer(r_cap) {} // Initialize read_buffer here
 
-    void writeWorker() {
-        while (true) {
-            std::unique_lock<std::mutex> lock(write_mutex);
-            write_cv_consumer.wait(lock, [&] { 
-                return !write_queue.empty() || write_buffer_needs_flush || write_worker_stop_flag; 
-            });
-            if (write_worker_stop_flag && write_queue.empty()) break;
+    // Member function declarations for worker threads
+    void writeWorker();
+    void readWorker();
+}; // End of ConveyorImpl struct definition
 
-            // Process all items in the queue
-            while (!write_queue.empty()) {
-                            WriteRequest req = write_queue.front();
-                            write_queue.pop_front();
-                            write_queue_bytes -= req.data.size(); // Decrement bytes count
-                            
-                            write_cv_producer.notify_all(); // Notify producers that space is available
+// Move implementations outside the struct
+void ConveyorImpl::writeWorker() {
+    while (true) {
+        std::unique_lock<std::mutex> lock(write_mutex);
+        write_cv_consumer.wait(lock, [&] { 
+            return !write_queue.empty() || write_buffer_needs_flush || write_worker_stop_flag; 
+        });
+        if (write_worker_stop_flag && write_queue.empty()) break;
 
-                lock.unlock(); // Unlock before performing I/O
-
-                // Handle O_APPEND semantics here, before pwrite
-                off_t write_pos = req.offset;
-                if (flags & O_APPEND) {
-                    // For append mode, seek to end *just before* writing to ensure data is appended
-                    // It's important to use the underlying lseek directly here.
-                    write_pos = ops.lseek(handle, 0, SEEK_END); 
-                    if (write_pos == LIBCONVEYOR_ERROR) {
-                        lock.lock(); // Re-lock to update stats.last_error_code
-                        if (stats.last_error_code.load() == 0) stats.last_error_code = errno;
-                        lock.unlock();
-                        // If lseek fails, we cannot proceed with this write.
-                        // We must re-lock to update state if necessary and then continue;
-                        // For now, continue to next request.
-                        continue; 
-                    }
-                }
-                
-                                                    auto start = std::chrono::steady_clock::now();
-                                                    ssize_t written_bytes = ops.pwrite(handle, req.data.data(), req.data.size(), write_pos);
-                                                    auto end = std::chrono::steady_clock::now();
-                                                    
-                                                    // Update atomics outside the lock
-                                                    stats.total_write_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-                                                    stats.write_ops_count++;                            lock.lock(); // Re-lock only for updating error code and logical_write_offset based on success/failure
-                            if (written_bytes < 0) {
+                    // Process all items in the queue
+                    while (!write_queue.empty()) {
+                        WriteRequest req = write_queue.front();
+                        write_queue.pop_front();
+                        // write_queue_bytes -= req.data.size(); // OLD POSITION - MOVED BELOW
+                        
+                        lock.unlock(); // Unlock before performing I/O
+        
+                        // Handle O_APPEND semantics here, before pwrite
+                        off_t write_pos = req.offset;
+                        if (flags & O_APPEND) {
+                            // For append mode, seek to end *just before* writing to ensure data is appended
+                            // It's important to use the underlying lseek directly here.
+                            write_pos = ops.lseek(handle, 0, SEEK_END); 
+                            if (write_pos == LIBCONVEYOR_ERROR) {
+                                lock.lock(); // Re-lock to update stats.last_error_code
                                 if (stats.last_error_code.load() == 0) stats.last_error_code = errno;
-                            } else if (written_bytes > 0) {
-                                logical_write_offset = write_pos + static_cast<off_t>(written_bytes);
-                            }            }
-            
-            // After processing all items, if a flush was requested and queue is empty, notify.
-            if (write_buffer_needs_flush && write_queue.empty()) {
-                write_buffer_needs_flush = false;
-                write_cv_producer.notify_all(); // Unblock anyone waiting for empty queue (e.g., conveyor_lseek, conveyor_flush)
-            }
+                                lock.unlock();
+                                // If lseek fails, we cannot proceed with this write.
+                                // We must re-lock to update state if necessary and then continue;
+                                // For now, continue to next request.
+                                continue; 
+                            }
+                        }
+                        
+                        auto start = std::chrono::steady_clock::now();
+                        ssize_t written_bytes = ops.pwrite(handle, req.data.data(), req.data.size(), write_pos);
+                        auto end = std::chrono::steady_clock::now();
+                        
+                        // Update atomics outside the lock
+                        stats.total_write_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+                        stats.write_ops_count++;                            
+                        lock.lock(); // Re-lock only for updating error code and logical_write_offset based on success/failure
+                        if (written_bytes < 0) {
+                            if (stats.last_error_code.load() == 0) stats.last_error_code = errno;
+                        } else if (written_bytes > 0) {
+                            logical_write_offset = write_pos + static_cast<off_t>(written_bytes);
+                        }
+                        write_queue_bytes -= req.data.size(); // NEW POSITION - Decrement bytes count AFTER pwrite
+                        write_cv_producer.notify_all(); // Notify producers that space is available
+                    }        
+        // After processing all items, if a flush was requested and queue is empty, notify.
+        if (write_buffer_needs_flush && write_queue.empty()) {
+            write_buffer_needs_flush = false;
+            write_cv_producer.notify_all(); // Unblock anyone waiting for empty queue (e.g., conveyor_lseek, conveyor_flush)
         }
     }
-
-                void readWorker() {
-
-                    std::vector<char> temp_buffer;
-
-                    temp_buffer.reserve(read_buffer.capacity); // Reserve once
-
-                    while (true) {
-
-                        std::unique_lock<std::mutex> lock(read_mutex);
-
-                        // Wait for signal: buffer stale, stop, or read_worker_needs_fill
-
-                        read_cv_producer.wait(lock, [&] { 
-
-                            return read_buffer_stale.load() || read_worker_stop_flag.load() || read_worker_needs_fill.load(); 
-
-                        });
-
-            
-
-                        if (read_worker_stop_flag.load()) break;
-
-            
-
-                        if (read_buffer_stale.load()) {
-
-                            read_buffer.clear();
-
-                            read_buffer_stale = false;
-
-                            // After clearing, reset read_head_in_storage to current_file_offset if we intend to fill from there
-
-                            // This will be handled by conveyor_lseek setting read_head_in_storage, so no action here.
-
-                            // Just clear the buffer and continue waiting for an explicit fill request.
-
-                        }
-
-                        
-
-                        // Only attempt to fill the buffer if requested and there is space
-
-                        if (read_worker_needs_fill.load() && read_buffer.available_space() > 0) {
-
-                            // read_worker_needs_fill = false; // Reset the flag early to avoid re-triggering -- REMOVED
-
-            
-
-                            off_t read_pos = read_head_in_storage.load();
-
-                            size_t n = read_buffer.available_space();
-
-                            temp_buffer.resize(n); // Resize temp_buffer to match what we intend to read
-
-                            
-
-                            lock.unlock(); // Unlock before performing I/O
-
-            
-
-                            auto start = std::chrono::steady_clock::now();
-
-                            ssize_t bytes_read = ops.pread(handle, temp_buffer.data(), n, read_pos);
-
-                            auto end = std::chrono::steady_clock::now();
-
-                            
-
-                            lock.lock(); // Re-lock to update shared state
-
-                            stats.total_read_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-                            stats.read_ops_count++;
-
-            
-
-                            if (bytes_read > 0) {
-
-                                read_buffer.write(temp_buffer.data(), bytes_read);
-
-                                read_head_in_storage += static_cast<off_t>(bytes_read);
-
-                            } else if (bytes_read == 0) {
-
-                                read_eof_flag = true;
-
-                            } else if (stats.last_error_code.load() == 0) {
-
-                                stats.last_error_code = errno;
-
-                            }
-
-                            read_worker_needs_fill = false; // Reset the flag after processing
-
-                        }
-
-                        read_cv_consumer.notify_all(); // Notify consumers that buffer state might have changed
-
-                    }
-
-                }
-
-            };
 }
+
+void ConveyorImpl::readWorker() {
+    std::vector<char> temp_buffer;
+    temp_buffer.reserve(read_buffer.capacity); // Reserve once
+
+    while (true) {
+        std::unique_lock<std::mutex> lock(read_mutex);
+        // Wait for signal: buffer stale, stop, or read_worker_needs_fill
+        read_cv_producer.wait(lock, [&] { 
+            return read_buffer_stale.load() || read_worker_stop_flag.load() || read_worker_needs_fill.load(); 
+        });
+
+        if (read_worker_stop_flag.load()) break;
+
+        if (read_buffer_stale.load()) {
+            read_buffer.clear();
+            read_buffer_stale = false;
+            // After clearing, reset read_head_in_storage to current_file_offset if we intend to fill from there
+            // This will be handled by conveyor_lseek setting read_head_in_storage, so no action here.
+            // Just clear the buffer and continue waiting for an explicit fill request.
+        }
+        
+        // Only attempt to fill the buffer if requested and there is space
+        if (read_worker_needs_fill.load() && read_buffer.available_space() > 0) {
+            // read_worker_needs_fill = false; // Reset the flag early to avoid re-triggering -- REMOVED
+            off_t read_pos = read_head_in_storage.load();
+            size_t n = read_buffer.available_space();
+            temp_buffer.resize(n); // Resize temp_buffer to match what we intend to read
+            
+            lock.unlock(); // Unlock before performing I/O
+
+            auto start = std::chrono::steady_clock::now();
+            ssize_t bytes_read = ops.pread(handle, temp_buffer.data(), n, read_pos);
+            auto end = std::chrono::steady_clock::now();
+            
+            lock.lock(); // Re-lock to update shared state
+            stats.total_read_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            stats.read_ops_count++;
+
+            if (bytes_read > 0) {
+                read_buffer.write(temp_buffer.data(), bytes_read);
+                read_head_in_storage += static_cast<off_t>(bytes_read);
+            } else if (bytes_read == 0) {
+                read_eof_flag = true;
+            } else if (stats.last_error_code.load() == 0) {
+                stats.last_error_code = errno;
+            }
+            read_worker_needs_fill = false; // Reset the flag after processing
+        }
+        read_cv_consumer.notify_all(); // Notify consumers that buffer state might have changed
+    }
+}
+} // End namespace libconveyor
 
 conveyor_t* conveyor_create(storage_handle_t h, int f, const storage_operations_t* ops, size_t w, size_t r) {
     auto* impl = new libconveyor::ConveyorImpl(w, r);
@@ -292,6 +248,10 @@ ssize_t conveyor_write(conveyor_t* conv, const void* buf, size_t count) {
     }
     
     std::unique_lock<std::mutex> lock(impl->write_mutex);    
+    if (impl->write_queue_bytes.load() + count > impl->write_buffer_capacity) {
+        impl->stats.write_buffer_full_events++;
+    }
+    
     if(!impl->write_cv_producer.wait_for(lock, std::chrono::seconds(30), [&]{ 
         return (impl->write_queue_bytes.load() + count <= impl->write_buffer_capacity) || impl->write_worker_stop_flag; 
     })) {
