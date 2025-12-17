@@ -288,6 +288,50 @@ void test_slow_backend_saturation() {
 }
 
 
+static std::atomic<int> g_pwrite_alternating_counter(0);
+static ssize_t mock_pwrite_alternating(storage_handle_t, const void* buf, size_t count, off_t offset) {
+    g_pwrite_alternating_counter++;
+    std::string data_to_write = "version" + std::to_string(g_pwrite_alternating_counter);
+    if (data_to_write.length() > count) {
+        data_to_write = data_to_write.substr(0, count);
+    } else {
+        data_to_write.resize(count, '\0');
+    }
+    return mock_pwrite(0, data_to_write.c_str(), count, offset);
+}
+
+static std::atomic<int> g_pread_alternating_counter(0);
+static ssize_t mock_pread_alternating(storage_handle_t, void* buf, size_t count, off_t offset) {
+    g_pread_alternating_counter++;
+    std::string data_to_write = "version" + std::to_string(g_pread_alternating_counter);
+    data_to_write.resize(count, '\0');
+    std::memcpy(buf, data_to_write.c_str(), count);
+    return count;
+}
+
+void test_lseek_invalidation() {
+    reset_mock_storage();
+    g_pread_alternating_counter = 0;
+    storage_operations_t mock_ops = {mock_pwrite, mock_pread_alternating, mock_lseek};
+
+    conveyor_t* conv = conveyor_create(1, O_RDONLY, &mock_ops, 0, 1024);
+    TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
+
+    // 1. Read the first version of the data
+    char read_buf[20] = {0};
+    conveyor_read(conv, read_buf, 8);
+    TEST_ASSERT(std::string(read_buf) == "version1", "First read should be version1");
+
+    // 2. Seek, which should invalidate the buffer, and read again
+    memset(read_buf, 0, sizeof(read_buf));
+    conveyor_lseek(conv, 0, SEEK_SET);
+    conveyor_read(conv, read_buf, 8);
+    TEST_ASSERT(std::string(read_buf) == "version2", "Second read should be version2");
+
+    conveyor_destroy(conv);
+}
+
+
 int main(int argc, char **argv) {
     test_create_destroy();
     test_write_and_flush();
@@ -297,6 +341,7 @@ int main(int argc, char **argv) {
     test_zero_byte_operations();
     test_read_sees_unflushed_write();
     test_slow_backend_saturation();
+    test_lseek_invalidation();
 
     if (g_test_failed) {
         std::cerr << "!!! One or more tests FAILED !!!" << std::endl;
