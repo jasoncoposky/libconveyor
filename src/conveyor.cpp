@@ -79,11 +79,11 @@ struct ConveyorImpl {
 
             // Process all items in the queue
             while (!write_queue.empty()) {
-                WriteRequest req = write_queue.front();
-                write_queue.pop_front();
-                write_queue_bytes -= req.data.size();
-                
-                write_cv_producer.notify_all(); // Notify producers that space is available
+                            WriteRequest req = write_queue.front();
+                            write_queue.pop_front();
+                            write_queue_bytes -= req.data.size(); // Decrement bytes count
+                            
+                            write_cv_producer.notify_all(); // Notify producers that space is available
 
                 lock.unlock(); // Unlock before performing I/O
 
@@ -104,15 +104,13 @@ struct ConveyorImpl {
                     }
                 }
                 
-                            auto start = std::chrono::steady_clock::now();
-                            ssize_t written_bytes = ops.pwrite(handle, req.data.data(), req.data.size(), write_pos);
-                            auto end = std::chrono::steady_clock::now();
-                            
-                            // Update atomics outside the lock
-                            stats.total_write_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-                            stats.write_ops_count++;
-                            
-                            lock.lock(); // Re-lock only for updating error code and logical_write_offset based on success/failure
+                                                    auto start = std::chrono::steady_clock::now();
+                                                    ssize_t written_bytes = ops.pwrite(handle, req.data.data(), req.data.size(), write_pos);
+                                                    auto end = std::chrono::steady_clock::now();
+                                                    
+                                                    // Update atomics outside the lock
+                                                    stats.total_write_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+                                                    stats.write_ops_count++;                            lock.lock(); // Re-lock only for updating error code and logical_write_offset based on success/failure
                             if (written_bytes < 0) {
                                 if (stats.last_error_code.load() == 0) stats.last_error_code = errno;
                             } else if (written_bytes > 0) {
@@ -236,8 +234,8 @@ conveyor_t* conveyor_create(storage_handle_t h, int f, const storage_operations_
     auto* impl = new libconveyor::ConveyorImpl(w, r);
     impl->handle = h; impl->flags = f; impl->ops = *ops;
     int mode = f & O_ACCMODE;
-    impl->read_buffer_enabled = (mode == O_RDONLY || mode == O_RDWR);
-    impl->write_buffer_enabled = (mode == O_WRONLY || mode == O_RDWR);
+    impl->read_buffer_enabled = (mode == O_RDONLY || mode == O_RDWR) && (r > 0);
+    impl->write_buffer_enabled = (mode == O_WRONLY || mode == O_RDWR) && (w > 0);
     if (impl->read_buffer_enabled) {
         impl->read_worker_thread = std::thread(&libconveyor::ConveyorImpl::readWorker, impl);
         // Immediately signal readWorker to start filling the buffer
@@ -271,7 +269,21 @@ void conveyor_destroy(conveyor_t* conv) {
 ssize_t conveyor_write(conveyor_t* conv, const void* buf, size_t count) {
     if (!conv) { errno = EBADF; return LIBCONVEYOR_ERROR; }
     auto* impl = reinterpret_cast<libconveyor::ConveyorImpl*>(conv);
-    if (!impl->write_buffer_enabled) { errno = EBADF; return LIBCONVEYOR_ERROR; }
+
+    if (!impl->write_buffer_enabled) { // Unbuffered write path
+        // Directly call the underlying pwrite operation
+        ssize_t written_bytes = impl->ops.pwrite(impl->handle, buf, count, impl->current_file_offset.load());
+        if (written_bytes > 0) {
+            impl->current_file_offset += written_bytes;
+            impl->stats.bytes_written += written_bytes;
+        } else if (written_bytes == LIBCONVEYOR_ERROR) {
+            // Propagate errno from the underlying pwrite call
+            // No need to set errno here, it should already be set by mock_pwrite_fail_once
+        }
+        return written_bytes;
+    }
+
+    // Buffered write path (original logic)
     if (impl->stats.last_error_code.load() != 0) { errno = impl->stats.last_error_code.load(); return LIBCONVEYOR_ERROR; }
 
     if (count > impl->write_buffer_capacity) {
@@ -279,8 +291,7 @@ ssize_t conveyor_write(conveyor_t* conv, const void* buf, size_t count) {
         return LIBCONVEYOR_ERROR;
     }
     
-    std::unique_lock<std::mutex> lock(impl->write_mutex);
-    
+    std::unique_lock<std::mutex> lock(impl->write_mutex);    
     if(!impl->write_cv_producer.wait_for(lock, std::chrono::seconds(30), [&]{ 
         return (impl->write_queue_bytes.load() + count <= impl->write_buffer_capacity) || impl->write_worker_stop_flag; 
     })) {

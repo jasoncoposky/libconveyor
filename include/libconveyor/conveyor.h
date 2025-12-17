@@ -31,6 +31,8 @@ typedef int ssize_t; // Windows doesn't have ssize_t, use int for signed size
 
 #define LIBCONVEYOR_ERROR (-1)
 
+typedef int storage_handle_t; // e.g., a file descriptor, or an iRODS file handle
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,8 +41,6 @@ extern "C" {
 typedef struct conveyor_t conveyor_t;
 
 // Represents the underlying storage handle
-typedef int storage_handle_t; // e.g., a file descriptor, or an iRODS file handle
-
 // Callbacks for the library to interact with the real storage
 typedef struct {
     ssize_t (*pwrite)(storage_handle_t, const void*, size_t, off_t);
@@ -70,7 +70,7 @@ typedef struct {
 // Creates a conveyor instance with specified buffer sizes and open flags
 conveyor_t* conveyor_create(
     storage_handle_t handle,
-    int flags, // The flags from the open() call, e.g., O_RDWR | O_APPEND
+    int flags,
     const storage_operations_t* ops,
     size_t write_buffer_size,
     size_t read_buffer_size
@@ -90,11 +90,13 @@ int conveyor_flush(conveyor_t* conv);
 // Retrieves the latest statistics, resetting the counters for the next window.
 int conveyor_get_stats(conveyor_t* conv, conveyor_stats_t* stats);
 
-#ifdef __cplusplus
 } // End extern "C" block
-#endif
 
 // C++-only declarations
-
+#ifdef __cplusplus
+namespace libconveyor {
+    struct RingBuffer; // Forward declaration
+}
+#endif
 
 #endif // LIBCONVEYOR_CONVEYOR_H

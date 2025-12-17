@@ -10,8 +10,9 @@
 #include <chrono>
 #include <atomic>
 #include <random>
-#include <iostream> // For logging
+#include <iostream> // Explicitly include for std::cerr and std::cout
 #include "libconveyor/detail/ring_buffer.h"
+
 
 // Global flag to track if any test has failed
 static bool g_test_failed = false;
@@ -34,7 +35,7 @@ static std::mutex g_mock_storage_mutex;
 
 static std::atomic<bool> g_simulate_slow_write = false;
 static std::atomic<bool> g_simulate_slow_read = false;
-static const std::chrono::milliseconds g_simulated_latency(5);
+static std::chrono::milliseconds g_simulated_latency(5);
 
 static ssize_t mock_pwrite(storage_handle_t, const void* buf, size_t count, off_t offset) {
     if (g_simulate_slow_write) {
@@ -46,6 +47,17 @@ static ssize_t mock_pwrite(storage_handle_t, const void* buf, size_t count, off_
     }
     std::memcpy(g_mock_storage_data.data() + offset, buf, count);
     return count;
+}
+
+static std::atomic<int> g_pwrite_fail_once_counter(0);
+
+static ssize_t mock_pwrite_fail_once(storage_handle_t handle, const void* buf, size_t count, off_t offset) {
+    if (g_pwrite_fail_once_counter.fetch_add(1) == 0) {
+        errno = EIO; // Simulate I/O error
+        return LIBCONVEYOR_ERROR;
+    }
+    // After the first failure, delegate to mock_pwrite's normal behavior
+    return mock_pwrite(handle, buf, count, offset);
 }
 
 static ssize_t mock_pread(storage_handle_t, void* buf, size_t count, off_t offset) {
@@ -79,6 +91,7 @@ void reset_mock_storage() {
     g_mock_storage_data.clear();
     g_simulate_slow_write = false;
     g_simulate_slow_read = false;
+    g_pwrite_fail_once_counter = 0; // Reset counter for fail-once mock
 }
 
 // --- Test Cases ---
@@ -314,9 +327,6 @@ void test_stats_collection() {
     // Ensure all writes are processed before collecting stats
     conveyor_flush(conv);
     
-    // The sleep is now redundant, but kept for historical context or if other async ops exist
-    // std::this_thread::sleep_for(g_simulated_latency + std::chrono::milliseconds(20));
-
     conveyor_stats_t stats;
     int ret = conveyor_get_stats(conv, &stats);
     TEST_ASSERT(ret == 0, "conveyor_get_stats returned non-zero");
@@ -408,6 +418,99 @@ void test_ring_buffer_wrap_around() {
     TEST_ASSERT(std::string(read_buf.data(), bytes_read) == expected_data.substr(0,10), "RingBuffer data mismatch after wrap-around read");
 }
 
+void test_unbuffered_write_error_propagation() {
+    reset_mock_storage();
+    // Use mock_pwrite_fail_once for the pwrite operation
+    storage_operations_t mock_ops = {mock_pwrite_fail_once, mock_pread, mock_lseek};
+
+    // Create conveyor with NO write buffer (0 capacity)
+    conveyor_t* conv = conveyor_create(1, O_WRONLY, &mock_ops, 0, 0);
+    TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr for unbuffered write test");
+
+    std::string test_data_1 = "First Write - Should Fail";
+    std::string test_data_2 = "Second Write - Should Succeed";
+
+    // Attempt the first write - should fail
+    ssize_t bytes_written_1 = conveyor_write(conv, test_data_1.c_str(), test_data_1.length());
+    TEST_ASSERT(bytes_written_1 == LIBCONVEYOR_ERROR, "First unbuffered conveyor_write should have failed");
+    TEST_ASSERT(errno == EIO, "errno should be EIO after failed unbuffered write");
+    TEST_ASSERT(g_mock_storage_data.empty(), "Mock storage should be empty after failed write");
+
+    // Clear errno for the next operation
+    errno = 0;
+
+    // Attempt the second write - should succeed (due to fail-once logic)
+    ssize_t bytes_written_2 = conveyor_write(conv, test_data_2.c_str(), test_data_2.length());
+    TEST_ASSERT(bytes_written_2 == (ssize_t)test_data_2.length(), "Second unbuffered conveyor_write should have succeeded");
+    TEST_ASSERT(errno == 0, "errno should be 0 after successful unbuffered write");
+    TEST_ASSERT(g_mock_storage_data.size() == test_data_2.length(), "Mock storage size mismatch after successful write");
+    TEST_ASSERT(std::string(g_mock_storage_data.data(), g_mock_storage_data.size()) == test_data_2, "Data mismatch in mock storage after successful write");
+
+    conveyor_destroy(conv);
+}
+
+/*
+// Removed test_slow_backend_saturation for now due to complexities in synchronization
+void test_slow_backend_saturation() {
+    reset_mock_storage();
+    g_simulate_slow_write = true; // Make backend writes slow
+    static const std::chrono::milliseconds old_simulated_latency = g_simulated_latency; // Save original
+    g_simulated_latency = std::chrono::milliseconds(50); // Set to 50ms for this test
+    storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
+
+    const size_t write_buffer_capacity = 100; // Large enough buffer
+    const size_t item_size = 10;
+    std::string item_data(item_size, 'X'); // "XXXXXXXXXX"
+
+    conveyor_t* conv = conveyor_create(1, O_WRONLY, &mock_ops, write_buffer_capacity, 0);
+    TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Allow worker threads to start
+
+    // Fill the buffer to capacity - 1 item
+    for (size_t i = 0; i < (write_buffer_capacity / item_size) - 1; ++i) { // 9 items
+        ssize_t bytes_written = conveyor_write(conv, item_data.c_str(), item_data.length());
+        TEST_ASSERT(bytes_written == (ssize_t)item_data.length(), "Initial write failed to queue item " + std::to_string(i));
+    }
+    // write_queue_bytes should be 90.
+
+    // Write one more item to make it full (100 bytes). This will be the item that gets "stuck" in mock_pwrite.
+    ssize_t bytes_written_last_item = conveyor_write(conv, item_data.c_str(), item_data.length()); // 10th item
+    TEST_ASSERT(bytes_written_last_item == (ssize_t)item_data.length(), "Last item write failed to queue");
+    // At this point, write_queue is full (100 bytes).
+    // writeWorker should pick up an item and call mock_pwrite (which will now block).
+
+    // Wait for writeWorker to enter mock_pwrite and signal that it's waiting
+    // This part is implicit - we assume writeWorker is fast enough to pick up an item.
+    // The main thread now has a full buffer.
+
+    // Attempt to write one more byte - this should block for the full 30 seconds
+    // (conveyor_write's internal timeout) as mock_pwrite is now blocking writeWorker.
+    auto start_time = std::chrono::high_resolution_clock::now();
+    ssize_t bytes_written_extra = conveyor_write(conv, "B", 1); // Extra byte
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time); // Measure in seconds
+
+    // Assertions for the blocking write - it should timeout
+    TEST_ASSERT(bytes_written_extra == LIBCONVEYOR_ERROR, "conveyor_write for extra byte should have timed out/failed");
+    TEST_ASSERT(errno == ETIMEDOUT, "errno should be ETIMEDOUT");
+    TEST_ASSERT(duration >= std::chrono::seconds(30), "conveyor_write should have blocked for at least 30 seconds");
+    TEST_ASSERT(duration < std::chrono::seconds(31), "conveyor_write should not block for extremely long (e.g., more than 31 seconds)");
+
+    // Unblock mock_pwrite to allow conveyor_destroy to proceed
+    //g_pwrite_block_promise.set_value(); 
+    std::this_thread::sleep_for(g_simulated_latency); // Allow writeWorker to finish processing
+
+    conveyor_destroy(conv); // This will flush all pending writes
+
+    // Verify the data that made it to storage
+    // Total written should be write_buffer_capacity (100 'X's)
+    TEST_ASSERT(g_mock_storage_data.size() == write_buffer_capacity, "Mock storage size mismatch after flush");
+    TEST_ASSERT(std::string(g_mock_storage_data.data(), write_buffer_capacity) == std::string(write_buffer_capacity, 'X'), "Data mismatch in mock storage for initial data");
+    
+    g_simulated_latency = old_simulated_latency; // Restore original latency
+}
+*/
+
 int main() {
     test_create_destroy();
     test_write_and_flush();
@@ -421,7 +524,9 @@ int main() {
     test_stats_collection();
     test_read_sees_unflushed_write();
     test_read_after_write_consistency();
-    test_ring_buffer_wrap_around(); // New test call
+    test_ring_buffer_wrap_around();
+    test_unbuffered_write_error_propagation(); // New test call
+    // test_slow_backend_saturation(); // Commented out for now
 
 
     if (g_test_failed) {
