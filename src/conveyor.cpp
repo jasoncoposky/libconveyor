@@ -304,7 +304,9 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
             current_read_pos += read_now;
             impl->read_cv_producer.notify_one();
         }
-        impl->current_file_offset = current_read_pos;
+    // FIX: Update the global offset to match the TOTAL data returned to the user,
+    // regardless of whether it came from disk or the write queue.
+    impl->current_file_offset = start_offset + total_read;
     } // read_lock is released here
 
     // --- Phase 2: Apply overlays from write_queue (Snoop) ---
