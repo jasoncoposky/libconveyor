@@ -1,4 +1,5 @@
 #include "libconveyor/conveyor.h"
+#include <iostream>
 #include <vector>
 #include <mutex>
 #include <condition_variable>
@@ -129,7 +130,7 @@ void ConveyorImpl::writeWorker() {
         if (write_buffer_needs_flush && write_queue.empty()) {
             write_buffer_needs_flush = false;
             write_cv_producer.notify_all(); // Unblock anyone waiting for empty queue (e.g., conveyor_lseek, conveyor_flush)
-        }
+        }        
     }
 }
 
@@ -370,14 +371,13 @@ off_t conveyor_lseek(conveyor_t* conv, off_t offset, int whence) {
     if (!conv) { errno = EBADF; return LIBCONVEYOR_ERROR; }
     auto* impl = reinterpret_cast<libconveyor::ConveyorImpl*>(conv);
 
-    // Temporarily bypass explicit flush for debugging
-    // if (impl->write_buffer_enabled) {
-    //     int flush_result = conveyor_flush(conv);
-    //     if (flush_result != 0) {
-    //         // Error occurred during flush, propagate it.
-    //         return LIBCONVEYOR_ERROR;
-    //     }
-    // }
+    if (impl->write_buffer_enabled) {
+        int flush_result = conveyor_flush(conv);
+        if (flush_result != 0) {
+            // Error occurred during flush, propagate it.
+            return LIBCONVEYOR_ERROR;
+        }
+    }
     
     // Now acquire locks for the seek operation itself
     std::unique_lock<std::mutex> read_lock(impl->read_mutex, std::defer_lock);
