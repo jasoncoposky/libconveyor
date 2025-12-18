@@ -308,22 +308,35 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
     } // read_lock is released here
 
     // --- Phase 2: Apply overlays from write_queue (Snoop) ---
-    if (impl->write_buffer_enabled && total_read > 0) {
+    // We check if write_queue has data for the REQUESTED range, not just the read range.
+    if (impl->write_buffer_enabled) {
         std::unique_lock<std::mutex> write_lock(impl->write_mutex);
+        
+        // The range the user WANTED to read
+        off_t requested_read_end = start_offset + count;
+        
         for (const auto& req : impl->write_queue) {
             off_t write_start = req.offset;
             off_t write_end = req.offset + req.data.size();
-            off_t read_start = start_offset;
-            off_t read_end = start_offset + total_read;
-
-            off_t overlap_start = std::max(read_start, write_start);
-            off_t overlap_end = std::min(read_end, write_end);
+            
+            // Check intersection with the full requested range
+            off_t overlap_start = std::max(start_offset, write_start);
+            off_t overlap_end = std::min(requested_read_end, write_end);
 
             if (overlap_start < overlap_end) {
+                // We have data in memory!
                 size_t len = static_cast<size_t>(overlap_end - overlap_start);
                 size_t dest_idx = static_cast<size_t>(overlap_start - start_offset);
                 size_t src_idx = static_cast<size_t>(overlap_start - write_start);
+                
+                // Copy memory-to-memory
                 std::memcpy(ptr + dest_idx, req.data.data() + src_idx, len);
+
+                // If this write extends beyond what we got from disk, update total_read
+                size_t bytes_covered = dest_idx + len;
+                if (bytes_covered > total_read) {
+                    total_read = bytes_covered;
+                }
             }
         }
     }

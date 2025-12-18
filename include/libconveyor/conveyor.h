@@ -31,7 +31,7 @@ typedef int ssize_t; // Windows doesn't have ssize_t, use int for signed size
 
 #define LIBCONVEYOR_ERROR (-1)
 
-typedef int storage_handle_t; // e.g., a file descriptor, or an iRODS file handle
+typedef void* storage_handle_t; // e.g., a file descriptor, or a pointer to a storage object
 
 #ifdef __cplusplus
 extern "C" {

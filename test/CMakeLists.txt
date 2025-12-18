@@ -16,3 +16,19 @@ target_include_directories(conveyor_basic_test PRIVATE
 )
 
 add_test(NAME ConveyorBasicTest COMMAND conveyor_basic_test)
+
+# Add the stress test executable
+add_executable(conveyor_stress_test conveyor_stress_test.cpp)
+
+# Link the stress test executable with libconveyor and gtest
+target_link_libraries(conveyor_stress_test PRIVATE
+    conveyor
+    gtest
+    gmock
+    gtest_main
+)
+
+# Specify include directories for the stress test
+target_include_directories(conveyor_stress_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
