@@ -57,3 +57,4 @@ enable_testing()
 add_subdirectory(external/googletest)
 
 add_subdirectory(test)
+add_subdirectory(benchmark)

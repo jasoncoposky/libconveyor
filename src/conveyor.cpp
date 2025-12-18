@@ -306,7 +306,6 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
         }
     // FIX: Update the global offset to match the TOTAL data returned to the user,
     // regardless of whether it came from disk or the write queue.
-    impl->current_file_offset = start_offset + total_read;
     } // read_lock is released here
 
     // --- Phase 2: Apply overlays from write_queue (Snoop) ---
@@ -342,6 +341,9 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
             }
         }
     }
+
+    // FIX: Update global offset based on total bytes read (disk + snoop)
+    impl->current_file_offset = start_offset + total_read;
 
     impl->stats.bytes_read += total_read;
     return total_read;
