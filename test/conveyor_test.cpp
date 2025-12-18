@@ -211,93 +211,29 @@ void test_zero_byte_operations() {
 
 void test_read_sees_unflushed_write() {
     reset_mock_storage();
-    g_simulate_slow_write = true; // Re-enable slow writes to test original condition
+    g_simulate_slow_write = true;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(1, O_RDWR, &mock_ops, 100, 100); // Small buffers
+    conveyor_t* conv = conveyor_create(1, O_RDWR, &mock_ops, 100, 100);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     std::string test_data = "ABCDE";
-    off_t write_offset = 0;
     
-    // Write data, it should go to the queue
     ssize_t bytes_written = conveyor_write(conv, test_data.c_str(), test_data.length());
-    TEST_ASSERT(bytes_written == (ssize_t)test_data.length(), "conveyor_write did not write all bytes. Expected " + std::to_string(test_data.length()) + ", Got " + std::to_string(bytes_written));
-
-    // To test reading from the unflushed queue, we can't use lseek as it flushes.
-    // We can simulate seeking back by creating a new conveyor instance, or by
-    // directly reading from an offset if the API supported it.
-    // For this test, we will rely on the fact that conveyor_write updates the
-    // logical offset, and we will test reading from the *beginning* of that write.
-    // A more robust test would be to have a `pread`-like `conveyor_pread` that
-    // reads from a specific offset.
-    // For now, we will reset the conveyor and read from the start.
-
-    // Destroy the first conveyor to ensure its state doesn't interfere.
-    conveyor_destroy(conv);
-    
-    // Create a new conveyor to read the data.
-    // This isn't a perfect test of "read sees unflushed write" because the unflushed
-    // data is gone with the old conveyor. 
-    // The original test was flawed because lseek flushes.
-    // The "snoop" logic in conveyor_read is what this test should be targeting.
-    // Let's restructure the test to what it was likely originally *intended* to be.
-    // Write something, then without seeking, read from a position that overlaps.
-
-    reset_mock_storage();
-    g_simulate_slow_write = true;
-    storage_operations_t mock_ops2 = {mock_pwrite, mock_pread, mock_lseek};
-    conv = conveyor_create(1, O_RDWR, &mock_ops2, 100, 100);
-    TEST_ASSERT(conv != nullptr, "conveyor_create for read-unflushed returned nullptr");
-
-    std::string data1 = "AAAAA";
-    std::string data2 = "BBBBB";
-    conveyor_write(conv, data1.c_str(), data1.length());
-    conveyor_write(conv, data2.c_str(), data2.length());
-
-    // Now, without flushing or seeking, the logical offset is at the end of "BBBBB".
-    // If we seek to 0, it will flush. So we can't do that.
-    // The read-snoop logic is designed to fulfill reads from the write queue if possible.
-    // The current `conveyor_read` reads from the current logical offset.
-    // To test the snoop, we'd need a `conveyor_pread`.
-    
-    // Let's reconsider the original test's intent. It called lseek.
-    // The `conveyor_lseek` flushes. This is by design. So the test was fundamentally flawed.
-    // Let's write a *correct* test for reading unflushed data. This means
-    // writing data and then reading it back from a different thread, or
-    // using a hypothetical `conveyor_pread`.
-    
-    // Given the current API, a true test is difficult.
-    // Let's fix the existing test to be logical. If lseek flushes, the data
-    // should be in the mock storage. The read should succeed from there.
-    
-    // The error was `bytes_read == 0`. This is because the `conveyor_lseek`
-    // flushes the write buffer, and the read buffer is not populated.
-    // After the lseek, the read worker should be kicked off to fill the buffer.
-
-    reset_mock_storage();
-    g_simulate_slow_write = true; 
-    storage_operations_t mock_ops3 = {mock_pwrite, mock_pread, mock_lseek};
-    conveyor_t* conv2 = conveyor_create(1, O_RDWR, &mock_ops3, 100, 100);
-    TEST_ASSERT(conv2 != nullptr, "conveyor_create returned nullptr");
-
-    std::string test_data2 = "ABCDE";
-    
-    ssize_t bytes_written2 = conveyor_write(conv2, test_data2.c_str(), test_data2.length());
-    TEST_ASSERT(bytes_written2 == (ssize_t)test_data2.length(), "conveyor_write did not write all bytes.");
+    TEST_ASSERT(bytes_written == (ssize_t)test_data.length(), "conveyor_write did not write all bytes.");
 
     // Seek to the beginning. This will FLUSH the write buffer.
-    off_t seek_res = conveyor_lseek(conv2, 0, SEEK_SET);
+    off_t seek_res = conveyor_lseek(conv, 0, SEEK_SET);
     TEST_ASSERT(seek_res == 0, "lseek failed");
 
     // The data is now in mock_storage. The read buffer should be invalidated and refilled.
-    std::vector<char> read_buffer2(test_data2.length() + 1, '\0');
-    ssize_t bytes_read2 = conveyor_read(conv2, read_buffer2.data(), test_data2.length());
+    std::vector<char> read_buffer(test_data.length() + 1, '\0');
+    ssize_t bytes_read = conveyor_read(conv, read_buffer.data(), test_data.length());
     
-    std::string read_str2(read_buffer2.data(), bytes_read2 > 0 ? bytes_read2 : 0);
-    TEST_ASSERT(bytes_read2 == (ssize_t)test_data2.length(), "conveyor_read did not read all bytes. Expected " + std::to_string(test_data2.length()) + ", Got " + std::to_string(bytes_read2));
-    TEST_ASSERT(read_str2 == test_data2, "Data mismatch. Expected '" + test_data2 + "', Got '" + read_str2 + "'");
+    std::string read_str(read_buffer.data(), bytes_read > 0 ? bytes_read : 0);
+    TEST_ASSERT(bytes_read == (ssize_t)test_data.length(), "conveyor_read did not read all bytes. Expected " + std::to_string(test_data.length()) + ", Got " + std::to_string(bytes_read));
+    TEST_ASSERT(read_str == test_data, "Data mismatch. Expected '" + test_data + "', Got '" + read_str + "'");
 
-    conveyor_destroy(conv2);
+    conveyor_destroy(conv);
 }
 
 static std::promise<void> g_pwrite_block_promise;

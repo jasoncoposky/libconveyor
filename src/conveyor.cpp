@@ -275,90 +275,59 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
     if (!impl->read_buffer_enabled) { errno = EBADF; return LIBCONVEYOR_ERROR; }
     if (impl->stats.last_error_code.load() != 0) { errno = impl->stats.last_error_code.load(); return LIBCONVEYOR_ERROR; }
 
-    ssize_t total_read = 0;
     char* ptr = static_cast<char*>(buf);
-    off_t current_read_offset_logic = impl->current_file_offset.load(); // Capture current logical offset
+    off_t start_offset = impl->current_file_offset.load();
+    ssize_t total_read = 0;
 
-    // --- Phase 1: Try to satisfy read from unflushed writes (write_queue) ---
-    if (impl->write_buffer_enabled) {
-        std::unique_lock<std::mutex> write_lock(impl->write_mutex); // Lock for write_queue access
+    // --- Phase 1: Read from read_buffer / storage ---
+    {
+        std::unique_lock<std::mutex> read_lock(impl->read_mutex);
+        off_t current_read_pos = start_offset;
+
+        while (total_read < count && !impl->read_worker_stop_flag.load()) {
+            if (impl->read_buffer.empty()) {
+                if (impl->read_eof_flag.load() && (current_read_pos >= impl->read_head_in_storage.load())) {
+                    break;
+                }
+                impl->read_worker_needs_fill = true;
+                impl->read_cv_producer.notify_one();
+                impl->read_cv_consumer.wait(read_lock, [&]{ 
+                    return impl->read_buffer.available_data() > 0 || impl->read_worker_stop_flag.load(); 
+                });
+                if (impl->read_buffer.available_data() == 0) {
+                    break;
+                }
+            }
+
+            size_t read_now = impl->read_buffer.read(ptr + total_read, count - total_read);
+            total_read += read_now;
+            current_read_pos += read_now;
+            impl->read_cv_producer.notify_one();
+        }
+        impl->current_file_offset = current_read_pos;
+    } // read_lock is released here
+
+    // --- Phase 2: Apply overlays from write_queue (Snoop) ---
+    if (impl->write_buffer_enabled && total_read > 0) {
+        std::unique_lock<std::mutex> write_lock(impl->write_mutex);
         for (const auto& req : impl->write_queue) {
             off_t write_start = req.offset;
             off_t write_end = req.offset + req.data.size();
-            off_t read_start_current_iter = current_read_offset_logic + total_read;
-            off_t read_end_current_iter = current_read_offset_logic + count;
+            off_t read_start = start_offset;
+            off_t read_end = start_offset + total_read;
 
-            // Calculate overlap
-            off_t overlap_start = std::max(read_start_current_iter, write_start);
-            off_t overlap_end = std::min(read_end_current_iter, write_end);
+            off_t overlap_start = std::max(read_start, write_start);
+            off_t overlap_end = std::min(read_end, write_end);
 
-            if (overlap_start < overlap_end) { // There is an overlap
-                size_t bytes_from_write_queue = static_cast<size_t>(overlap_end - overlap_start);
-                size_t offset_in_req_data = static_cast<size_t>(overlap_start - write_start);
-                size_t offset_in_read_buf = static_cast<size_t>(overlap_start - current_read_offset_logic);
-                
-                std::memcpy(ptr + offset_in_read_buf, req.data.data() + offset_in_req_data, bytes_from_write_queue);
-                total_read += bytes_from_write_queue;
-
-                if (total_read == count) {
-                    impl->current_file_offset = current_read_offset_logic + total_read;
-                    impl->stats.bytes_read += total_read;
-                    return total_read;
-                }
+            if (overlap_start < overlap_end) {
+                size_t len = static_cast<size_t>(overlap_end - overlap_start);
+                size_t dest_idx = static_cast<size_t>(overlap_start - start_offset);
+                size_t src_idx = static_cast<size_t>(overlap_start - write_start);
+                std::memcpy(ptr + dest_idx, req.data.data() + src_idx, len);
             }
         }
     }
 
-    // Release write_lock, no longer needed for reading
-    // No, we already used a unique_lock, which will unlock when it goes out of scope.
-    // So we need to create the read_lock before unlocking the write_lock.
-    
-    std::unique_lock<std::mutex> read_lock(impl->read_mutex); // Lock for read_buffer access
-    // At this point, write_lock is released.
-
-    current_read_offset_logic += total_read;
-    size_t remaining_to_read = count - total_read;
-
-    // --- Phase 2: Try to satisfy remaining read from read_buffer and underlying storage ---
-    while (remaining_to_read > 0 && !impl->read_worker_stop_flag.load()) {
-        if (impl->read_buffer.available_data() == 0) { // If read buffer is empty
-            if (impl->read_eof_flag.load() && (current_read_offset_logic >= impl->read_head_in_storage.load())) {
-                break; // Reached EOF and no more data in buffer or storage
-            }
-
-            impl->read_worker_needs_fill = true;
-            impl->read_cv_producer.notify_one();
-
-            // Wait for the read worker to fill the buffer
-            // Use current_read_offset_logic to ensure read worker fills from correct position
-            impl->read_cv_consumer.wait(read_lock, [&]{ 
-                return (impl->read_buffer.available_data() > 0) || impl->read_worker_stop_flag.load();
-            });
-
-            if (impl->read_worker_stop_flag.load()) { // Check stop flag immediately
-                break;
-            }
-
-            if (impl->read_buffer.available_data() == 0) { // Still no data after waiting
-                if (impl->read_eof_flag.load() && (current_read_offset_logic >= impl->read_head_in_storage.load())) {
-                    break; // Truly EOF
-                } else if (impl->stats.last_error_code.load() != 0) {
-                    errno = impl->stats.last_error_code.load();
-                    return LIBCONVEYOR_ERROR; // Propagate error from worker
-                }
-                // If we reach here, it implies a logical issue or a timeout, return 0 for now.
-                break;
-            }
-        }
-        
-        size_t bytes_from_read_buffer = impl->read_buffer.read(ptr + total_read, remaining_to_read);
-        total_read += bytes_from_read_buffer;
-        remaining_to_read -= bytes_from_read_buffer;
-        current_read_offset_logic += bytes_from_read_buffer;
-        impl->read_cv_producer.notify_one(); // Notify readWorker that space might be available in read_buffer
-    }
-
-    impl->current_file_offset = current_read_offset_logic; // Update global logical offset
     impl->stats.bytes_read += total_read;
     return total_read;
 }
