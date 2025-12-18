@@ -90,10 +90,6 @@ struct ConveyorImpl {
 
             WriteRequest req = write_queue.front();
             write_queue.pop_front();
-            write_queue_bytes -= req.data.size();
-            
-            write_cv_producer.notify_all(); 
-
             lock.unlock(); 
 
             off_t write_pos;
@@ -108,6 +104,7 @@ struct ConveyorImpl {
             auto end = std::chrono::steady_clock::now();
             
             lock.lock(); 
+            write_queue_bytes -= req.data.size();
             stats.total_write_latency_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
             stats.write_ops_count++;
             
