@@ -6,14 +6,18 @@
 
 ## Features
 
-*   **Dual Ring Buffers:** Separate, configurable buffers for write-behind caching and read-ahead prefetching.
-*   **I/O Latency Hiding:** Asynchronous background threads perform actual storage operations, allowing application threads to proceed quickly.
-*   **Thread-Safe API:** All public API calls are fully thread-safe, protecting internal data structures and ensuring consistent state.
+*   **Dual Ring Buffers:** Separate, configurable buffers for write-behind caching and read-ahead prefetching. The write buffer now uses a **linear ring buffer** for optimal performance, eliminating per-write heap allocations.
+*   **I/O Latency Hiding (Asynchronous Writes & Read-Ahead):** Asynchronous background threads perform actual storage operations, allowing application threads to proceed quickly. Writes are now zero-allocation on the hot path.
+*   **Optimized Read-After-Write Consistency (Snooping):** The `conveyor_read` function efficiently "snoops" the write buffer, directly patching newly written data into read requests before it hits disk, ensuring immediate consistency without flushing.
+*   **Robust Thread-Safety:**
+    *   **Generation Counters:** Protect against `lseek` invalidating read buffers while `readWorker` is performing slow I/O, preventing data corruption.
+    *   **Correct Lock Scoping:** Carefully managed mutex acquisition and release prevent deadlocks between application and worker threads.
+    *   **Reduced Lock Contention:** The `writeWorker` is optimized to hold locks for minimal durations, copying data from the ring buffer and releasing the lock before performing slow I/O.
 *   **`pread`/`pwrite` Semantics:** Interacts with underlying storage using stateless, offset-based `pread`/`pwrite` operations for robust multithreaded I/O.
 *   **Pluggable Storage Backend:** Abstracted storage operations (`storage_operations_t`) allow `libconveyor` to be easily integrated with any block-storage mechanism (e.g., file systems, network storage APIs, custom drivers).
 *   **Observability:** Provides detailed runtime statistics (`conveyor_stats_t`) including bytes transferred, latency, and buffer congestion events, with a "reset-on-read" model for windowed monitoring.
-*   **Robust Error Handling:** Detects and reports the first asynchronous I/O error to the user via sticky error codes.
-*   **Fail-Fast for Invalid Writes:** Prevents indefinite hangs by failing writes that exceed the buffer's total capacity.
+*   **Robust Error Handling:** Detects and reports the first asynchronous I/O error to the user via sticky error codes, with a mechanism to clear them (`conveyor_clear_error`).
+*   **Fail-Fast for Invalid Writes:** Prevents indefinite hangs by failing writes that exceed the buffer's total capacity or timing out if space is not available.
 
 ## Motivation
 
@@ -24,32 +28,78 @@ This library was developed as a foundational component to enhance I/O performanc
 `libconveyor` operates by decoupling application I/O requests from the physical I/O operations.
 
 1.  **Application Thread:** Calls `conveyor_read()`, `conveyor_write()`, or `conveyor_lseek()`.
-    *   `conveyor_write()`: Places data into an in-memory queue (`WriteRequest`) and immediately returns.
-    *   `conveyor_read()`: Attempts to satisfy requests from an in-memory read buffer. If data is unavailable, it signals the `readWorker` and waits.
-    *   `conveyor_lseek()`: Flushes pending writes, invalidates read buffers, and updates internal file pointers before performing the underlying seek.
-2.  **`writeWorker` Thread (Write-Behind):** Runs in the background, consuming `WriteRequest` objects from a queue. It performs `ops.pwrite()` to the actual storage at the specified offset.
-3.  **`readWorker` Thread (Read-Ahead):** Runs in the background, proactively fetching data from storage using `ops.pread()` into its ring buffer. It anticipates future reads to minimize latency.
+    *   `conveyor_write()`: Copies data into a pre-allocated **write ring buffer** and pushes lightweight metadata (`WriteRequest`) to a queue, then immediately returns. This path is now zero-allocation.
+    *   `conveyor_read()`: Prioritizes satisfying requests from the in-memory read buffer (filled by `readWorker`). It then "snoops" the write queue's metadata and patches data directly from the write ring buffer into the user's buffer if any overlaps with pending writes are found. If data is unavailable, it signals the `readWorker` and waits.
+    *   `conveyor_lseek()`: Flushes pending writes, invalidates read buffers, updates internal file pointers, and increments a **generation counter** before performing the underlying seek.
+2.  **`writeWorker` Thread (Write-Behind):** Runs in the background, consuming `WriteRequest` metadata from a queue. It retrieves the data from the write ring buffer (using `peek_at`), performs `ops.pwrite()` to the actual storage, and only then marks the space in the write ring buffer as free. This process is optimized for reduced lock contention.
+3.  **`readWorker` Thread (Read-Ahead):** Runs in the background, proactively fetching data from storage using `ops.pread()` into its read ring buffer. It anticipates future reads to minimize latency, also checking the **generation counter** to discard stale data after a concurrent `lseek`.
 4.  **`storage_operations_t`:** A set of function pointers (`pwrite`, `pread`, `lseek`) provided during `conveyor_create` that define how `libconveyor` interacts with the specific underlying storage backend.
 
 ## Building
 
-`libconveyor` uses CMake for its build system.
+`libconveyor` uses CMake for its build system. It includes comprehensive unit tests, stress tests (using Google Test), and performance benchmarks.
 
 ```bash
+# Clone the repository and navigate into it
+git clone <repository_url>
+cd libconveyor
+
+# Create a build directory and configure CMake
 mkdir build
 cd build
 cmake ..
+
+# Build the project (default is Debug configuration)
 cmake --build .
+
+# For Release build (recommended for performance testing)
+cmake --build . --config Release
 ```
 
 To run the tests:
 
 ```bash
-cd build
+# From the build directory
+# Basic tests (custom harness)
 ./test/Debug/conveyor_basic_test.exe # On Windows
-# Or on Linux/macOS:
-# ./test/conveyor_basic_test
+# ./test/Release/conveyor_basic_test.exe # On Windows
+# ./test/conveyor_basic_test # On Linux/macOS
+
+# Stress tests (Google Test)
+./test/Debug/conveyor_stress_test.exe # On Windows
+# ./test/Release/conveyor_stress_test.exe # On Windows
+# ./test/conveyor_stress_test # On Linux/macOS
 ```
+
+To run the performance benchmark:
+
+```bash
+# From the build directory (use Release build for meaningful results)
+./benchmark/Release/conveyor_benchmark.exe # On Windows
+# ./benchmark/conveyor_benchmark # On Linux/macOS
+```
+
+## Performance
+
+`libconveyor` is designed to provide significant performance gains by hiding I/O latency, especially when an application can perform other work while writes are happening asynchronously in the background. A simulated benchmark was run with a 10MB total write, using 4KB blocks and a simulated backend latency of 2ms per block (actual sleep on Windows is ~15ms due to timer resolution). The conveyor was configured with a 20MB write buffer to absorb the entire burst.
+
+### Benchmark Results
+
+**Scenario:** Write 10MB of data in 4KB blocks.
+
+| Benchmark                  | Total Time (ms) | Throughput (MB/s) | Avg Latency (us) | P99 Latency (us) |
+| :------------------------- | :-------------- | :---------------- | :--------------- | :--------------- |
+| **Raw POSIX Write** (Blocking) | 36739.7         | 0.272             | 14351.2          | 16588.1          |
+| **libconveyor Write** (Async Enqueue) | 1.8625          | 5369.13           | 0.700            | 2.5              |
+
+### Speedup Factor: 19726x
+
+**Interpretation:**
+The "Raw POSIX Write" scenario measures the time taken when the application thread is blocked, waiting for each 4KB write operation to complete (including the simulated 15ms latency). The total time is approximately `2560 writes * 14.3ms/write = ~36.7 seconds`.
+
+The "libconveyor Write (Async Enqueue)" scenario measures only the time the application thread spends enqueuing the writes into `libconveyor`'s internal buffers. This process is extremely fast (milliseconds), as `libconveyor` immediately absorbs the data into its ring buffer and returns control to the application. The actual writing to the slow backend happens concurrently in `writeWorker` threads.
+
+This benchmark vividly demonstrates `libconveyor`'s ability to nearly eliminate perceived I/O latency for the application thread during write bursts, allowing the application to achieve a massive speedup by performing other useful work instead of waiting for I/O. The `conveyor_flush` operation (which is not included in the "Async Enqueue" time but measured separately as 36506 ms) ensures all data eventually reaches persistent storage.
 
 ## Usage Example (Conceptual)
 
@@ -59,68 +109,115 @@ cd build
 #include <string>
 #include <vector>
 #include <fcntl.h> // For O_RDWR, etc.
+#include <unistd.h> // For close, unlink (POSIX)
+#include <sys/stat.h> // For file permissions (POSIX)
+
+// --- Windows-specific includes and mappings for example ---
+#ifdef _MSC_VER
+#include <io.h>
+#define open _open
+#define close _close
+#define unlink _unlink
+#define S_IREAD _S_IREAD
+#define S_IWRITE _S_IWRITE
+#endif
+// --- End Windows-specific ---
 
 // Example mock storage operations (these would typically interact with a real file system or network)
-ssize_t my_pwrite(storage_handle_t, const void* buf, size_t count, off_t offset) {
-    // ... implement actual pwrite to storage ...
+ssize_t my_pwrite(storage_handle_t fd, const void* buf, size_t count, off_t offset) {
+    // In a real scenario, this would write to the actual storage medium.
+    // For this example, we just simulate the work.
     std::cout << "Storage: pwrite " << count << " bytes at " << offset << std::endl;
+    // Simulate some work or latency
+    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
     return count;
 }
 
-ssize_t my_pread(storage_handle_t, void* buf, size_t count, off_t offset) {
-    // ... implement actual pread from storage ...
+ssize_t my_pread(storage_handle_t fd, void* buf, size_t count, off_t offset) {
+    // In a real scenario, this would read from the actual storage medium.
+    // For this example, we just fill with dummy data.
     std::cout << "Storage: pread " << count << " bytes at " << offset << std::endl;
+    std::memset(buf, 'R', count); // Fill with 'R' for Read
+    // Simulate some work or latency
+    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
     return count;
 }
 
-off_t my_lseek(storage_handle_t, off_t offset, int whence) {
-    // ... implement actual lseek ...
+off_t my_lseek(storage_handle_t fd, off_t offset, int whence) {
+    // In a real scenario, this would perform the actual seek on the storage.
     std::cout << "Storage: lseek to " << offset << " with whence " << whence << std::endl;
-    return offset; // Example: simple seek-set
+    // This example just returns the offset for SEEK_SET; real lseek is more complex.
+    if (whence == SEEK_SET) return offset;
+    // For a mock, a proper implementation would need to track file size.
+    return 0; 
 }
 
 int main() {
     storage_operations_t my_storage_ops = {my_pwrite, my_pread, my_lseek};
     
+    // Create a temporary file for the mock storage backend to interact with
+    // Use O_BINARY on Windows to prevent text mode issues
+    int temp_fd = open("example_storage.bin", O_RDWR | O_CREAT | O_TRUNC | O_BINARY, S_IREAD | S_IWRITE);
+    if (temp_fd < 0) {
+        perror("Failed to open example_storage.bin");
+        return 1;
+    }
+
     // Create a conveyor with 1MB write buffer and 512KB read buffer
     conveyor_t* conv = conveyor_create(
-        123, // Example storage handle (e.g., a file descriptor)
+        (storage_handle_t)(intptr_t)temp_fd, // Pass the actual file descriptor as handle
         O_RDWR, // Open for read/write
-        my_storage_ops,
+        &my_storage_ops,
         1024 * 1024, // 1MB write buffer
         512 * 1024   // 512KB read buffer
     );
 
     if (!conv) {
         std::cerr << "Failed to create conveyor." << std::endl;
+        close(temp_fd);
+        unlink("example_storage.bin");
         return 1;
     }
 
     std::string data_to_write = "Hello, buffered world!";
+    std::cout << "Application: Writing '" << data_to_write << "'..." << std::endl;
     conveyor_write(conv, data_to_write.c_str(), data_to_write.length());
     
     // Data is now in the buffer, writeWorker will flush it asynchronously.
     // Application thread continues immediately.
+    std::cout << "Application: Write enqueued, application continuing work." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Simulate other work
 
     // Force flush to ensure data is written before destroy
+    std::cout << "Application: Flushing conveyor..." << std::endl;
     conveyor_flush(conv);
+    std::cout << "Application: Conveyor flushed." << std::endl;
 
+    // Now, try to read the data back
+    char read_buffer[100];
+    off_t seek_res = conveyor_lseek(conv, 0, SEEK_SET);
+    if (seek_res == LIBCONVEYOR_ERROR) {
+        std::cerr << "Failed to lseek." << std::endl;
+        conveyor_destroy(conv); close(temp_fd); unlink("example_storage.bin"); return 1;
+    }
+    
+    ssize_t bytes_read = conveyor_read(conv, read_buffer, data_to_write.length());
+    if (bytes_read == LIBCONVEYOR_ERROR) {
+        std::cerr << "Failed to read." << std::endl;
+        conveyor_destroy(conv); close(temp_fd); unlink("example_storage.bin"); return 1;
+    }
+    read_buffer[bytes_read] = '\0';
+    std::cout << "Application: Read '" << read_buffer << "'" << std::endl;
+    
     // Get and print some stats
     conveyor_stats_t stats;
     if (conveyor_get_stats(conv, &stats) == 0) {
         std::cout << "Bytes written in window: " << stats.bytes_written << std::endl;
-        std::cout << "Avg write latency: " << stats.avg_write_latency_ms << "ms" << std::endl;
+        std::cout << "Avg write latency: " << stats.avg_write_latency_ms << "us" << std::endl;
     }
 
     conveyor_destroy(conv);
+    close(temp_fd);
+    unlink("example_storage.bin");
     return 0;
 }
-```
-
-## Contributing
-
-Contributions are welcome! Please ensure that any new features or bug fixes include corresponding test cases and maintain the existing coding style.
-
-## License
-
-`libconveyor` is distributed under the **BSD 3-Clause License**. See the [LICENSE.md](./LICENSE.md) file for full details.

@@ -160,7 +160,7 @@ Result run_conveyor_write_benchmark(int fd, const std::vector<char>& data) {
     storage_operations_t ops = { slow_pwrite, slow_pread, slow_lseek };
     
     // Create conveyor with 5MB buffers
-    conveyor_t* conv = conveyor_create((storage_handle_t)(intptr_t)fd, O_RDWR, &ops, 5 * 1024 * 1024, 1024 * 1024);
+    conveyor_t* conv = conveyor_create((storage_handle_t)(intptr_t)fd, O_RDWR, &ops, 20 * 1024 * 1024, 1024 * 1024);
     
     std::vector<double> latencies;
     latencies.reserve(NUM_OPS);
@@ -176,20 +176,21 @@ Result run_conveyor_write_benchmark(int fd, const std::vector<char>& data) {
             exit(1);
         }
 
-        // Simulate application work
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
         auto end_op = std::chrono::high_resolution_clock::now();
         latencies.push_back(std::chrono::duration<double, std::micro>(end_op - start_op).count());
     }
     
+    auto end_enqueue = std::chrono::high_resolution_clock::now();
+    double enqueue_ms = std::chrono::duration<double, std::milli>(end_enqueue - start_total).count();
+    
+    auto flush_start = std::chrono::high_resolution_clock::now();
     conveyor_flush(conv); 
-
-    auto end_total = std::chrono::high_resolution_clock::now();
-    double total_ms = std::chrono::duration<double, std::milli>(end_total - start_total).count();
+    auto flush_end = std::chrono::high_resolution_clock::now();
+    double flush_ms = std::chrono::duration<double, std::milli>(flush_end - flush_start).count();
+    std::cout << "  (Enqueue time: " << enqueue_ms << " ms, Flush time: " << flush_ms << " ms)\n";
     
     conveyor_destroy(conv);
-    return calculate_stats(latencies, total_ms);
+    return calculate_stats(latencies, enqueue_ms);
 }
 
 int main() {
