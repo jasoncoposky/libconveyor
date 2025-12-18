@@ -1,4 +1,5 @@
 #include "libconveyor/conveyor.h"
+#include "libconveyor/detail/ring_buffer.h"
 #include <vector>
 #include <mutex>
 #include <condition_variable>
@@ -16,49 +17,7 @@
 
 namespace libconveyor {
 
-struct RingBuffer { 
-    std::vector<char> buffer;
-    size_t capacity = 0;
-    size_t head = 0;
-    size_t tail = 0;
-    size_t size = 0;
 
-    RingBuffer(size_t cap) : capacity(cap), buffer(cap) {}
-
-    size_t write(const char* data, size_t len) {
-        if (len == 0) return 0;
-        size_t bytes_to_write = std::min(len, capacity - size);
-        if (bytes_to_write == 0) return 0;
-        size_t first_chunk_len = std::min(bytes_to_write, capacity - head);
-        std::memcpy(buffer.data() + head, data, first_chunk_len);
-        if (bytes_to_write > first_chunk_len) {
-            std::memcpy(buffer.data(), data + first_chunk_len, bytes_to_write - first_chunk_len);
-        }
-        head = (head + bytes_to_write) % capacity;
-        size += bytes_to_write;
-        return bytes_to_write;
-    }
-
-    size_t read(char* data, size_t len) {
-        if (len == 0) return 0;
-        size_t bytes_to_read = std::min(len, size);
-        if (bytes_to_read == 0) return 0;
-        size_t first_chunk_len = std::min(bytes_to_read, capacity - tail);
-        std::memcpy(data, buffer.data() + tail, first_chunk_len);
-        if (bytes_to_read > first_chunk_len) {
-            std::memcpy(data + first_chunk_len, buffer.data(), bytes_to_read - first_chunk_len);
-        }
-        tail = (tail + bytes_to_read) % capacity;
-        size -= bytes_to_read;
-        return bytes_to_read;
-    }
-
-    void clear() { size = 0; head = 0; tail = 0; }
-    bool empty() const { return size == 0; }
-    bool full() const { return size == capacity; }
-    size_t available_space() const { return capacity - size; }
-    size_t available_data() const { return size; }
-};
 
 struct WriteRequest {
     std::vector<char> data;
@@ -137,15 +96,11 @@ struct ConveyorImpl {
 
             lock.unlock(); 
 
-            off_t write_pos = req.offset;
+            off_t write_pos;
             if (flags & O_APPEND) {
-                write_pos = ops.lseek(handle, 0, SEEK_END); 
-                if (write_pos == LIBCONVEYOR_ERROR) {
-                    lock.lock();
-                    if (stats.last_error_code.load() == 0) stats.last_error_code = errno;
-                    lock.unlock();
-                    continue; 
-                }
+                write_pos = logical_write_offset.load(); 
+            } else {
+                write_pos = req.offset;
             }
             
             auto start = std::chrono::steady_clock::now();
@@ -159,7 +114,9 @@ struct ConveyorImpl {
             if (written_bytes < 0) {
                 if (stats.last_error_code.load() == 0) stats.last_error_code = errno;
             } else if (written_bytes > 0) {
-                logical_write_offset = write_pos + written_bytes;
+                if (flags & O_APPEND) { 
+                    logical_write_offset += written_bytes;
+                }
             }
         }
     }
@@ -228,7 +185,19 @@ conveyor_t* conveyor_create(storage_handle_t h, int f, const storage_operations_
         impl->read_worker_needs_fill = true;
         impl->read_cv_producer.notify_one();
     }
-    if (impl->write_buffer_enabled) impl->write_worker_thread = std::thread(&libconveyor::ConveyorImpl::writeWorker, impl);
+    if (impl->write_buffer_enabled) {
+        if (impl->flags & O_APPEND) {
+            off_t initial_file_size = impl->ops.lseek(impl->handle, 0, SEEK_END);
+            if (initial_file_size == LIBCONVEYOR_ERROR) {
+                delete impl;
+                // errno should be set by ops.lseek, propagate it
+                return nullptr;
+            }
+            impl->logical_write_offset = initial_file_size;
+            impl->current_file_offset = initial_file_size; 
+        }
+        impl->write_worker_thread = std::thread(&libconveyor::ConveyorImpl::writeWorker, impl);
+    }
     return reinterpret_cast<conveyor_t*>(impl);
 }
 
@@ -483,4 +452,14 @@ void conveyor_stop(conveyor_t* conv) {
         impl->write_cv_producer.notify_all();
         impl->write_cv_consumer.notify_all();
     }
+}
+
+int conveyor_clear_error(conveyor_t* conv) {
+    if (!conv) {
+        errno = EBADF;
+        return LIBCONVEYOR_ERROR;
+    }
+    auto* impl = reinterpret_cast<libconveyor::ConveyorImpl*>(conv);
+    impl->stats.last_error_code = 0;
+    return 0;
 }

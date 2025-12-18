@@ -93,6 +93,9 @@ int conveyor_get_stats(conveyor_t* conv, conveyor_stats_t* stats);
 // Stops the worker threads without destroying the conveyor object
 void conveyor_stop(conveyor_t* conv);
 
+// Clears any sticky error code in the conveyor.
+int conveyor_clear_error(conveyor_t* conv);
+
 } // End extern "C" block
 
 // C++-only declarations
