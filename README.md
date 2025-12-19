@@ -202,6 +202,24 @@ The "libconveyor Write (Async Enqueue)" scenario measures only the time the appl
 
 This benchmark vividly demonstrates `libconveyor`'s ability to nearly eliminate perceived I/O latency for the application thread during write bursts, allowing the application to achieve a massive speedup by performing other useful work instead of waiting for I/O. The `conveyor_flush` operation (which is not included in the "Async Enqueue" time but measured separately as 36506 ms) ensures all data eventually reaches persistent storage.
 
+### Read Benchmark Results
+
+**Scenario:** Read 10MB of data in 4KB blocks with a 2ms simulated backend latency. The conveyor was configured with a 5MB read buffer, designed to require only two "disk" accesses for the entire 10MB file.
+
+| Benchmark                      | Total Time (ms) | Throughput (MB/s) | Avg Latency (us) |
+| :----------------------------- | :-------------- | :---------------- | :--------------- |
+| **Raw POSIX Read** (Blocking)  | 7095.91         | 1.40926           | 2768.12          |
+| **libconveyor Read** (Prefetching) | 12.3602         | 809.048           | 4.72941          |
+
+### Read Speedup Factor: 574.094x
+
+**Interpretation:**
+The "Raw POSIX Read" scenario involves the application thread directly calling a `pread` operation for each 4KB block. With a simulated 2ms latency per call, and 2560 blocks (10MB / 4KB), the total time is dominated by `2560 * 2ms = 5120ms`. The higher actual total time of ~7 seconds indicates additional overhead beyond just the simulated latency.
+
+The "libconveyor Read (Prefetching)" scenario demonstrates the effectiveness of the read-ahead buffer. The application thread performs `conveyor_read`, which is primarily satisfied by the in-memory read buffer. The `readWorker` thread, running in the background, proactively fetches large chunks (5MB at a time in this setup) from the slow storage. This significantly reduces the number of times the application thread has to wait for slow I/O, resulting in a dramatic reduction in perceived latency and a massive increase in throughput. The application thread experiences very low latency because most reads are served from the fast in-memory buffer.
+
+This benchmark highlights `libconveyor`'s capability to mitigate the impact of high-latency storage on read operations by prefetching data and serving application requests from a fast in-memory cache.
+
 ## Usage Example (Conceptual)
 
 ```cpp
@@ -324,90 +342,6 @@ int main() {
     unlink("example_storage.bin");
     return 0;
 }
-```
-
-## Modern C++17 Interface (`conveyor_modern.hpp`)
-
-For modern C++ applications, `libconveyor` provides a header-only C++17 wrapper that offers enhanced safety, expressiveness, and a more portable API. It uses RAII, a custom `Result` type (mimicking `std::expected`) for error handling, and SFINAE for buffer safety, incurring zero runtime overhead.
-
-### Key Improvements
-
-#### 1. Safety via SFINAE & Container References
-Instead of manually passing pointers and sizes, which risks buffer overflows, the modern API uses C++17's SFINAE (Substitution Failure Is Not An Error) and generic templates to accept `std::vector`, `std::string`, or `std::array` directly, making size mismatches impossible.
-
-```cpp
-// OLD C-style API
-// conveyor_write(c, ptr, 100); // Risk: What if ptr only has 50 bytes?
-
-// NEW C++17 API
-std::string data = "Hello C++17";
-// Automatically calculates size, impossible to mismatch
-auto result = conveyor.write(data); 
-```
-
-#### 2. Error Handling via `Result<T>` (C++17 `std::variant`)
-The new API returns a custom `Result<T>` object, which internally uses `std::variant`. This object either contains the result value or a strongly-typed `std::error_code`, eliminating the need to check for -1 and read the global `errno`.
-
-```cpp
-auto result = conveyor.write(data);
-if (!result) {
-    // result.error() contains the std::error_code
-    std::cerr << "Write failed: " << result.error().message() << "\n";
-}
-```
-
-#### 3. Automatic Resource Management (RAII)
-The `Conveyor` class wraps the raw C-style pointer in a `std::unique_ptr` with a custom deleter. The destructor automatically calls `conveyor_destroy`, which in turn flushes any pending writes. This prevents resource leaks and data loss from forgetting to clean up.
-
-### Modern Usage Example
-
-```cpp
-#include "libconveyor/conveyor_modern.hpp"
-#include <iostream>
-#include <vector>
-
-// Dummy storage operations for the example
-ssize_t my_pwrite(storage_handle_t, const void*, size_t count, off_t) { return count; }
-ssize_t my_pread(storage_handle_t, void*, size_t count, off_t) { return count; }
-off_t my_lseek(storage_handle_t, off_t offset, int) { return offset; }
-
-void cpp17_example_usage(storage_handle_t fd, const storage_operations_t& ops) {
-    storage_operations_t ops = { my_pwrite, my_pread, my_lseek };
-    
-    // 1. Configure the `Config` struct
-    auto result = libconveyor::v2::Conveyor::create({
-        .handle = nullptr, // Using a dummy handle for this example
-        .ops = ops,
-        .write_capacity = 5 * 1024 * 1024
-    });
-
-    if (!result) {
-        std::cerr << "Failed to init: " << result.error().message() << std::endl;
-        return;
-    }
-
-    // Move ownership to local variable
-    auto conveyor = std::move(result.value());
-
-    // 2. Write using a std::vector (no size param needed)
-    std::vector<int> numbers = {1, 2, 3, 4, 5};
-    
-    // The .and_then() chain allows functional-style error handling
-    conveyor.write(numbers)
-        .and_then([&](size_t written) -> std::expected<void, std::error_code> {
-            std::cout << "Wrote " << written << " bytes\n";
-            return conveyor.flush();
-        })
-        .or_else([](std::error_code e) -> std::expected<void, std::error_code> {
-            std::cerr << "IO Error: " << e.message() << "\n";
-            return std::unexpected(e);
-        });
-
-    // 3. Stats with strong types
-    auto stats = conveyor.stats();
-    std::cout << "Avg Latency: " << stats.avg_write_latency.count() << "ms\n";
-
-} // Destructor for 'conveyor' runs here -> Flushes remaining data -> Destroys threads
 ```
 
 ## Contributing

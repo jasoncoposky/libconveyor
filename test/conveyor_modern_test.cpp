@@ -10,6 +10,7 @@ using namespace libconveyor::v2;
 using ::testing::_;
 using ::testing::Return;
 using ::testing::SetArgPointee;
+using ::testing::Invoke;
 
 // --- Mock Storage Backend (for C-style API, to be used by modern wrapper) ---
 class MockStorage {
@@ -67,11 +68,11 @@ protected:
                 return available;
             }));
         ON_CALL(*mock_storage, lseek_mock(_, _, SEEK_SET))
-            .WillByDefault(Return(off_t(0)));
+            .WillByDefault(Return(static_cast<off_t>(0)));
         ON_CALL(*mock_storage, lseek_mock(_, _, SEEK_END))
-            .WillByDefault(Invoke([this](storage_handle_t, off_t offset, int) {
+            .WillByDefault(Invoke([this](storage_handle_t, off_t offset, int) -> off_t {
                 std::lock_guard<std::mutex> lock(mock_storage->mx);
-                return mock_storage->data.size() + offset;
+                return static_cast<off_t>(mock_storage->data.size() + offset);
             }));
     }
 
@@ -81,7 +82,7 @@ protected:
 };
 
 TEST_F(ConveyorModernTest, CreateAndDestroy) {
-    EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillRepeatedly(Return(0)); // For O_APPEND check
+    EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillRepeatedly(Return(static_cast<off_t>(0))); // For O_APPEND check
 
     Config cfg;
     cfg.handle = mock_storage;
@@ -97,7 +98,7 @@ TEST_F(ConveyorModernTest, CreateAndDestroy) {
 
 TEST_F(ConveyorModernTest, CreateFailsWithError) {
     // Simulate conveyor_create failing (e.g., lseek fails during O_APPEND init)
-    EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillOnce(Return(LIBCONVEYOR_ERROR));
+    EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillOnce(Return(static_cast<off_t>(LIBCONVEYOR_ERROR)));
 
     Config cfg;
     cfg.handle = mock_storage;
@@ -209,7 +210,7 @@ TEST_F(ConveyorModernTest, Seek) {
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
-    EXPECT_CALL(*mock_storage, lseek_mock(_, 100, SEEK_SET)).WillOnce(Return(100));
+    EXPECT_CALL(*mock_storage, lseek_mock(_, 100, SEEK_SET)).WillOnce(Return(static_cast<off_t>(100)));
     auto seek_res = conveyor.seek(100);
     ASSERT_TRUE(seek_res.has_value()) << seek_res.error().message();
     ASSERT_EQ(seek_res.value(), 100);
@@ -239,7 +240,7 @@ TEST_F(ConveyorModernTest, RaIiDestroys) {
     // implicitly verifying that conveyor_destroy (which uses mock methods)
     // completes before mock_storage is gone.
     EXPECT_CALL(*mock_storage, pwrite_mock(_,_,_,_)).WillRepeatedly(Return(1));
-    EXPECT_CALL(*mock_storage, lseek_mock(_,_,_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*mock_storage, lseek_mock(_,_,_)).WillRepeatedly(Return(static_cast<off_t>(0)));
 
     {
         Config cfg;
