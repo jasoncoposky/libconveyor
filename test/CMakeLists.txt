@@ -31,6 +31,7 @@ target_link_libraries(conveyor_modern_test PRIVATE
 # Specify include directories for the C++23 modern API test
 target_include_directories(conveyor_modern_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../external/expected/include
 )
 
 add_test(NAME ConveyorModernTest COMMAND conveyor_modern_test)

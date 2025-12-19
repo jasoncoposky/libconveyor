@@ -83,12 +83,13 @@ protected:
 TEST_F(ConveyorModernTest, CreateAndDestroy) {
     EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillRepeatedly(Return(0)); // For O_APPEND check
 
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops,
-        .write_capacity = 1024,
-        .read_capacity = 1024
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+    cfg.write_capacity = 1024;
+    cfg.read_capacity = 1024;
+
+    auto conveyor_res = Conveyor::create(cfg);
 
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     // Conveyor is destroyed by unique_ptr in TearDown
@@ -98,29 +99,31 @@ TEST_F(ConveyorModernTest, CreateFailsWithError) {
     // Simulate conveyor_create failing (e.g., lseek fails during O_APPEND init)
     EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillOnce(Return(LIBCONVEYOR_ERROR));
 
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops,
-        .open_flags = O_RDWR | O_APPEND, // Trigger lseek
-        .write_capacity = 1024,
-        .read_capacity = 1024
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+    cfg.open_flags = O_RDWR | O_APPEND; // Trigger lseek
+    cfg.write_capacity = 1024;
+    cfg.read_capacity = 1024;
+
+    auto conveyor_res = Conveyor::create(cfg);
 
     ASSERT_FALSE(conveyor_res.has_value());
     ASSERT_EQ(conveyor_res.error(), std::error_code(errno, std::system_category()));
 }
 
 TEST_F(ConveyorModernTest, WriteAndFlush) {
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops,
-        .write_capacity = 1024,
-        .read_capacity = 0 // No read buffer for this test
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+    cfg.write_capacity = 1024;
+    cfg.read_capacity = 0; // No read buffer for this test
+
+    auto conveyor_res = Conveyor::create(cfg);
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
-    std::string test_data = "Hello, C++23 Conveyor!";
+    std::string test_data = "Hello, C++17 Conveyor!";
     EXPECT_CALL(*mock_storage, pwrite_mock(_, _, test_data.size(), 0)).WillOnce(Return(test_data.size()));
     
     auto write_res = conveyor.write(test_data);
@@ -139,12 +142,13 @@ TEST_F(ConveyorModernTest, ReadFromDisk) {
     std::string initial_data = "Data from disk.";
     mock_storage->data.assign(initial_data.begin(), initial_data.end());
 
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops,
-        .write_capacity = 0,
-        .read_capacity = 1024
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+    cfg.write_capacity = 0;
+    cfg.read_capacity = 1024;
+
+    auto conveyor_res = Conveyor::create(cfg);
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
@@ -156,12 +160,12 @@ TEST_F(ConveyorModernTest, ReadFromDisk) {
             return available;
         }));
     
-    std::vector<std::byte> read_buf(initial_data.size());
+    std::vector<char> read_buf(initial_data.size()); // Using std::vector<char> for C++17 compatibility
     auto read_res = conveyor.read(read_buf);
 
     ASSERT_TRUE(read_res.has_value()) << read_res.error().message();
     ASSERT_EQ(read_res.value(), initial_data.size());
-    ASSERT_EQ(std::string(reinterpret_cast<const char*>(read_buf.data()), read_buf.size()), initial_data);
+    ASSERT_EQ(std::string(read_buf.data(), read_buf.size()), initial_data);
 }
 
 TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
@@ -169,12 +173,13 @@ TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
     std::string disk_data = "OLD_DISK_DATA";
     mock_storage->data.assign(disk_data.begin(), disk_data.end());
 
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops,
-        .write_capacity = 1024,
-        .read_capacity = 1024
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+    cfg.write_capacity = 1024;
+    cfg.read_capacity = 1024;
+
+    auto conveyor_res = Conveyor::create(cfg);
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
@@ -187,19 +192,20 @@ TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
     // the read() should return NEW_DATA from the snoop logic
     EXPECT_CALL(*mock_storage, pread_mock(_, _, _, _)).WillOnce(Return(disk_data.size()));
     
-    std::vector<std::byte> read_buf(new_data.size());
+    std::vector<char> read_buf(new_data.size()); // Using std::vector<char> for C++17 compatibility
     auto read_res = conveyor.read(read_buf);
 
     ASSERT_TRUE(read_res.has_value()) << read_res.error().message();
     ASSERT_EQ(read_res.value(), new_data.size());
-    ASSERT_EQ(std::string(reinterpret_cast<const char*>(read_buf.data()), read_buf.size()), new_data);
+    ASSERT_EQ(std::string(read_buf.data(), read_buf.size()), new_data);
 }
 
 TEST_F(ConveyorModernTest, Seek) {
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+
+    auto conveyor_res = Conveyor::create(cfg);
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
@@ -210,10 +216,11 @@ TEST_F(ConveyorModernTest, Seek) {
 }
 
 TEST_F(ConveyorModernTest, Stats) {
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+
+    auto conveyor_res = Conveyor::create(cfg);
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
@@ -235,11 +242,12 @@ TEST_F(ConveyorModernTest, RaIiDestroys) {
     EXPECT_CALL(*mock_storage, lseek_mock(_,_,_)).WillRepeatedly(Return(0));
 
     {
-        auto conveyor_res = Conveyor::create({
-            .handle = mock_storage,
-            .ops = ops,
-            .write_capacity = 100
-        });
+        Config cfg;
+        cfg.handle = mock_storage;
+        cfg.ops = ops;
+        cfg.write_capacity = 100;
+
+        auto conveyor_res = Conveyor::create(cfg);
         ASSERT_TRUE(conveyor_res.has_value());
         auto conveyor = std::move(conveyor_res.value());
         conveyor.write(std::string(10, 'B'));
@@ -251,11 +259,12 @@ TEST_F(ConveyorModernTest, RaIiDestroys) {
 TEST_F(ConveyorModernTest, ErrorPropagation) {
     EXPECT_CALL(*mock_storage, pwrite_mock(_,_,_,_)).WillOnce(Return(LIBCONVEYOR_ERROR));
     
-    auto conveyor_res = Conveyor::create({
-        .handle = mock_storage,
-        .ops = ops,
-        .write_capacity = 100
-    });
+    Config cfg;
+    cfg.handle = mock_storage;
+    cfg.ops = ops;
+    cfg.write_capacity = 100;
+
+    auto conveyor_res = Conveyor::create(cfg);
     ASSERT_TRUE(conveyor_res.has_value());
     auto conveyor = std::move(conveyor_res.value());
 

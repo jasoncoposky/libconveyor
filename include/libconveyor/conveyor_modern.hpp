@@ -2,109 +2,155 @@
 #define LIBCONVEYOR_MODERN_HPP
 
 #include "libconveyor/conveyor.h"
-#include <expected>       // C++23: Error handling without exceptions
-#include <span>           // C++20: View over contiguous memory
 #include <memory>         // std::unique_ptr
-#include <chrono>         // Strong typing for time
+#include <string>
+#include <vector>
+#include <array>
 #include <system_error>   // std::error_code
-#include <filesystem>     // std::filesystem::path
+#include <variant>        // C++17
+#include <chrono>         // std::chrono
+#include <type_traits>    // std::enable_if, std::void_t
 
-namespace libconveyor::v2 {
+namespace libconveyor {
+namespace v2 {
 
 using namespace std::chrono_literals;
 
-// --- 1. Concepts for Data ---
-// Allows passing vectors, arrays, strings, or raw pointers transparently
-template<typename T>
-concept ByteContiguous = requires(T t) {
-    { std::data(t) } -> std::convertible_to<const void*>;
-    { std::size(t) } -> std::convertible_to<size_t>;
+// --- 1. Result Type (Poor man's std::expected) ---
+template <typename T>
+class Result {
+    std::variant<std::error_code, T> storage_;
+public:
+    Result(T val) : storage_(std::move(val)) {}
+    Result(std::error_code ec) : storage_(ec) {}
+
+    bool has_value() const { return std::holds_alternative<T>(storage_); }
+    explicit operator bool() const { return has_value(); }
+
+    T& value() { return std::get<T>(storage_); }
+    const T& value() const { return std::get<T>(storage_); }
+    
+    std::error_code error() const { 
+        if (has_value()) return std::error_code();
+        return std::get<std::error_code>(storage_); 
+    }
 };
 
-// --- 2. Strong Types for Configuration ---
+// Specialization for void (success/failure only)
+template <>
+class Result<void> {
+    std::error_code ec_;
+public:
+    Result() : ec_() {}
+    Result(std::error_code ec) : ec_(ec) {}
+    
+    bool has_value() const { return !ec_; }
+    explicit operator bool() const { return !ec_; }
+    std::error_code error() const { return ec_; }
+};
+
+// --- 2. SFINAE Detection for Contiguous Containers ---
+// Detects objects that have .data() and .size()
+template <typename T, typename = void>
+struct is_contiguous : std::false_type {};
+
+template <typename T>
+struct is_contiguous<T, std::void_t<
+    decltype(std::data(std::declval<T>())), 
+    decltype(std::size(std::declval<T>()))
+>> : std::true_type {};
+
+// --- 3. Configuration Struct ---
 struct Config {
     storage_handle_t handle;
     storage_operations_t ops;
-    size_t write_capacity = 1024 * 1024; // 1MB default
+    size_t write_capacity = 1024 * 1024;
     size_t read_capacity = 1024 * 1024;
     int open_flags = O_RDWR;
 };
 
-// --- 3. The Modern Conveyor Class ---
+// --- 4. The Modern Conveyor Class ---
 class Conveyor {
 private:
-    // RAII: Custom deleter automatically calls conveyor_destroy
     struct Deleter { 
         void operator()(conveyor_t* ptr) const { conveyor_destroy(ptr); } 
     };
     std::unique_ptr<conveyor_t, Deleter> impl_;
 
 public:
-    // No default constructor (resource must exist)
     Conveyor() = delete;
+    
+    // Explicit ownership transfer
+    explicit Conveyor(conveyor_t* raw) : impl_(raw) {}
+    
+    // Move-only type
+    Conveyor(Conveyor&&) noexcept = default;
+    Conveyor& operator=(Conveyor&&) noexcept = default;
+    Conveyor(const Conveyor&) = delete;
+    Conveyor& operator=(const Conveyor&) = delete;
 
-    // Factory: Returns value or error (no exceptions)
-    static std::expected<Conveyor, std::error_code> create(Config cfg) {
+    // Factory
+    static Result<Conveyor> create(const Config& cfg) {
+        // In C++17, we pass pointers to ops struct
         conveyor_t* raw = conveyor_create(cfg.handle, cfg.open_flags, &cfg.ops, 
                                         cfg.write_capacity, cfg.read_capacity);
         if (!raw) {
-            return std::unexpected(std::error_code(errno, std::system_category()));
+            return std::error_code(errno, std::system_category());
         }
         return Conveyor(raw);
     }
 
-    // Explicit Move semantics (Rule of 5)
-    Conveyor(Conveyor&&) noexcept = default;
-    Conveyor& operator=(Conveyor&&) noexcept = default;
-
-    // Private constructor for factory
-    explicit Conveyor(conveyor_t* ptr) : impl_(ptr) {}
-
     // --- Modern Write API ---
-    // Accepts anything that looks like a buffer (vector, string, array)
-    // Returns bytes written or error code
-    template<ByteContiguous Buffer>
-    std::expected<size_t, std::error_code> write(const Buffer& buffer) {
+    // Accepts std::vector, std::string, std::array, etc.
+    template <typename Container, 
+              typename = std::enable_if_t<is_contiguous<Container>::value>>
+    Result<size_t> write(const Container& buffer) {
         const void* ptr = std::data(buffer);
-        size_t len = std::size(buffer) * sizeof(typename Buffer::value_type);
+        // C++17 std::size returns number of elements, we need byte size
+        size_t len = std::size(buffer) * sizeof(typename Container::value_type);
         
         ssize_t res = conveyor_write(impl_.get(), ptr, len);
         
         if (res == LIBCONVEYOR_ERROR) {
-            return std::unexpected(std::error_code(errno, std::system_category()));
+            return std::error_code(errno, std::system_category());
         }
         return static_cast<size_t>(res);
     }
 
     // --- Modern Read API ---
-    // Accepts mutable span
-    std::expected<size_t, std::error_code> read(std::span<std::byte> buffer) {
-        ssize_t res = conveyor_read(impl_.get(), buffer.data(), buffer.size());
+    // Accepts mutable vector/string/array to fill
+    template <typename Container,
+              typename = std::enable_if_t<is_contiguous<Container>::value>>
+    Result<size_t> read(Container& buffer) {
+        void* ptr = (void*)std::data(buffer);
+        size_t len = std::size(buffer) * sizeof(typename Container::value_type);
+
+        ssize_t res = conveyor_read(impl_.get(), ptr, len);
         
         if (res == LIBCONVEYOR_ERROR) {
-            return std::unexpected(std::error_code(errno, std::system_category()));
+            return std::error_code(errno, std::system_category());
         }
         return static_cast<size_t>(res);
     }
 
-    // --- Modern Seek ---
-    std::expected<off_t, std::error_code> seek(off_t offset, int whence = SEEK_SET) {
+    // --- Seek ---
+    Result<off_t> seek(off_t offset, int whence = SEEK_SET) {
         off_t res = conveyor_lseek(impl_.get(), offset, whence);
         if (res == LIBCONVEYOR_ERROR) {
-            return std::unexpected(std::error_code(errno, std::system_category()));
+            return std::error_code(errno, std::system_category());
         }
         return res;
     }
 
-    // --- Explicit Flush ---
-    std::expected<void, std::error_code> flush() {
+    // --- Flush ---
+    Result<void> flush() {
         if (conveyor_flush(impl_.get()) != 0) {
-            return std::unexpected(std::error_code(errno, std::system_category()));
+            return std::error_code(errno, std::system_category());
         }
-        return {};
+        return Result<void>();
     }
 
-    // --- Stats with std::chrono ---
+    // --- Stats ---
     struct Stats {
         size_t bytes_written;
         size_t bytes_read;
@@ -124,6 +170,7 @@ public:
     }
 };
 
-} // namespace libconveyor::v2
+} // namespace v2
+} // namespace libconveyor
 
 #endif // LIBCONVEYOR_MODERN_HPP
