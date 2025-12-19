@@ -206,7 +206,7 @@ conveyor_t* conveyor_create(storage_handle_t h, int f, const storage_operations_
         if (impl->flags & O_APPEND) {
             off_t initial_file_size = impl->ops.lseek(impl->handle, 0, SEEK_END);
             if (initial_file_size == LIBCONVEYOR_ERROR) {
-                delete impl;
+                conveyor_destroy(reinterpret_cast<conveyor_t*>(impl));
                 return nullptr;
             }
             impl->logical_write_offset = initial_file_size;

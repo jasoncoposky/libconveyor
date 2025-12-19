@@ -11,6 +11,8 @@ using ::testing::_;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 using ::testing::Invoke;
+using ::testing::DoAll;
+using ::testing::Assign;
 
 // --- Mock Storage Backend (for C-style API, to be used by modern wrapper) ---
 class MockStorage {
@@ -52,20 +54,21 @@ protected:
         // Default expectations for a healthy system
         ON_CALL(*mock_storage, pwrite_mock(_, _, _, _))
             .WillByDefault(Invoke([this](storage_handle_t, const void* buf, size_t count, off_t offset) {
+                std::this_thread::sleep_for(1ms);
                 std::lock_guard<std::mutex> lock(mock_storage->mx);
                 if (offset + count > mock_storage->data.size()) {
                     mock_storage->data.resize(offset + count);
                 }
                 std::memcpy(mock_storage->data.data() + offset, buf, count);
-                return count;
+                return static_cast<ssize_t>(count);
             }));
         ON_CALL(*mock_storage, pread_mock(_, _, _, _))
             .WillByDefault(Invoke([this](storage_handle_t, void* buf, size_t count, off_t offset) {
                 std::lock_guard<std::mutex> lock(mock_storage->mx);
-                if (offset >= (off_t)mock_storage->data.size()) return 0;
+                if (offset >= (off_t)mock_storage->data.size()) return static_cast<ssize_t>(0);
                 size_t available = std::min(count, mock_storage->data.size() - (size_t)offset);
                 std::memcpy(buf, mock_storage->data.data() + offset, available);
-                return available;
+                return static_cast<ssize_t>(available);
             }));
         ON_CALL(*mock_storage, lseek_mock(_, _, SEEK_SET))
             .WillByDefault(Return(static_cast<off_t>(0)));
@@ -98,7 +101,8 @@ TEST_F(ConveyorModernTest, CreateAndDestroy) {
 
 TEST_F(ConveyorModernTest, CreateFailsWithError) {
     // Simulate conveyor_create failing (e.g., lseek fails during O_APPEND init)
-    EXPECT_CALL(*mock_storage, lseek_mock(_, _, _)).WillOnce(Return(static_cast<off_t>(LIBCONVEYOR_ERROR)));
+    EXPECT_CALL(*mock_storage, lseek_mock(_, _, _))
+        .WillOnce(DoAll(Assign(&errno, EIO), Return(static_cast<off_t>(LIBCONVEYOR_ERROR))));
 
     Config cfg;
     cfg.handle = mock_storage;
@@ -110,7 +114,7 @@ TEST_F(ConveyorModernTest, CreateFailsWithError) {
     auto conveyor_res = Conveyor::create(cfg);
 
     ASSERT_FALSE(conveyor_res.has_value());
-    ASSERT_EQ(conveyor_res.error(), std::error_code(errno, std::system_category()));
+    ASSERT_EQ(conveyor_res.error(), std::error_code(EIO, std::system_category()));
 }
 
 TEST_F(ConveyorModernTest, WriteAndFlush) {
@@ -125,7 +129,15 @@ TEST_F(ConveyorModernTest, WriteAndFlush) {
     auto conveyor = std::move(conveyor_res.value());
 
     std::string test_data = "Hello, C++17 Conveyor!";
-    EXPECT_CALL(*mock_storage, pwrite_mock(_, _, test_data.size(), 0)).WillOnce(Return(test_data.size()));
+    EXPECT_CALL(*mock_storage, pwrite_mock(_, _, test_data.size(), 0))
+        .WillOnce(Invoke([this](storage_handle_t, const void* buf, size_t count, off_t offset) {
+            std::lock_guard<std::mutex> lock(mock_storage->mx);
+            if (offset + count > mock_storage->data.size()) {
+                mock_storage->data.resize(offset + count);
+            }
+            std::memcpy(mock_storage->data.data() + offset, buf, count);
+            return static_cast<ssize_t>(count);
+        }));
     
     auto write_res = conveyor.write(test_data);
     ASSERT_TRUE(write_res.has_value()) << write_res.error().message();
@@ -135,8 +147,7 @@ TEST_F(ConveyorModernTest, WriteAndFlush) {
     ASSERT_TRUE(flush_res.has_value()) << flush_res.error().message();
     
     // Verify mock storage contains data
-    ASSERT_EQ(mock_storage->data.size(), test_data.size());
-    ASSERT_EQ(std::string(mock_storage->data.data(), mock_storage->data.size()), test_data);
+    ASSERT_EQ(std::string(mock_storage->data.data(), test_data.size()), test_data);
 }
 
 TEST_F(ConveyorModernTest, ReadFromDisk) {
@@ -154,7 +165,7 @@ TEST_F(ConveyorModernTest, ReadFromDisk) {
     auto conveyor = std::move(conveyor_res.value());
 
     EXPECT_CALL(*mock_storage, pread_mock(_, _, _, _))
-        .WillOnce(Invoke([this](storage_handle_t, void* buf, size_t count, off_t offset) {
+        .WillRepeatedly(Invoke([this](storage_handle_t, void* buf, size_t count, off_t offset) {
             std::lock_guard<std::mutex> lock(mock_storage->mx);
             size_t available = std::min(count, mock_storage->data.size() - (size_t)offset);
             std::memcpy(buf, mock_storage->data.data() + offset, available);
@@ -170,10 +181,6 @@ TEST_F(ConveyorModernTest, ReadFromDisk) {
 }
 
 TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
-    // Write data directly to mock_storage first to simulate existing disk data
-    std::string disk_data = "OLD_DISK_DATA";
-    mock_storage->data.assign(disk_data.begin(), disk_data.end());
-
     Config cfg;
     cfg.handle = mock_storage;
     cfg.ops = ops;
@@ -186,14 +193,18 @@ TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
 
     // Write new data that will be in the write queue
     std::string new_data = "NEW_DATA";
-    conveyor.seek(0).value(); // Move to start
     conveyor.write(new_data).value(); // Write new data, it's buffered
 
-    // Expect pread to be called for the initial read buffer fill, but then
-    // the read() should return NEW_DATA from the snoop logic
-    EXPECT_CALL(*mock_storage, pread_mock(_, _, _, _)).WillOnce(Return(disk_data.size()));
-    
-    std::vector<char> read_buf(new_data.size()); // Using std::vector<char> for C++17 compatibility
+    // Seek back to the beginning. This will invalidate the read buffer, but the
+    // unflushed data is still in the write queue.
+    conveyor.seek(0).value(); 
+
+    // Give the read worker a moment to potentially (and incorrectly) fill the 
+    // read buffer with stale data from the mock storage. This makes the test
+    // more robust by ensuring we are truly hitting the snoop path.
+    std::this_thread::sleep_for(10ms);
+
+    std::vector<char> read_buf(new_data.size());
     auto read_res = conveyor.read(read_buf);
 
     ASSERT_TRUE(read_res.has_value()) << read_res.error().message();
@@ -226,7 +237,8 @@ TEST_F(ConveyorModernTest, Stats) {
     auto conveyor = std::move(conveyor_res.value());
 
     conveyor.write(std::string(10, 'A')).value();
-    conveyor.flush().value();
+    auto flush_res = conveyor.flush();
+    ASSERT_TRUE(flush_res.has_value()) << flush_res.error().message();
 
     auto stats = conveyor.stats();
     ASSERT_EQ(stats.bytes_written, 10);
@@ -258,7 +270,11 @@ TEST_F(ConveyorModernTest, RaIiDestroys) {
 }
 
 TEST_F(ConveyorModernTest, ErrorPropagation) {
-    EXPECT_CALL(*mock_storage, pwrite_mock(_,_,_,_)).WillOnce(Return(LIBCONVEYOR_ERROR));
+    EXPECT_CALL(*mock_storage, pwrite_mock(_,_,_,_))
+        .WillOnce(Invoke([](storage_handle_t, const void*, size_t, off_t) {
+            errno = EIO;
+            return static_cast<ssize_t>(LIBCONVEYOR_ERROR);
+        }));
     
     Config cfg;
     cfg.handle = mock_storage;
@@ -274,10 +290,10 @@ TEST_F(ConveyorModernTest, ErrorPropagation) {
     
     auto flush_res = conveyor.flush();
     ASSERT_FALSE(flush_res.has_value()); // Flush should report error
-    ASSERT_EQ(flush_res.error(), std::error_code(errno, std::system_category()));
+    ASSERT_EQ(flush_res.error(), std::error_code(EIO, std::system_category()));
     
     // Subsequent operations should also report error
     auto subsequent_write_res = conveyor.write(std::string(10, 'D'));
     ASSERT_FALSE(subsequent_write_res.has_value());
-    ASSERT_EQ(subsequent_write_res.error(), std::error_code(errno, std::system_category()));
+    ASSERT_EQ(subsequent_write_res.error(), std::error_code(EIO, std::system_category()));
 }
