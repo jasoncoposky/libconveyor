@@ -50,3 +50,18 @@ target_link_libraries(conveyor_stress_test PRIVATE
 target_include_directories(conveyor_stress_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
+
+add_executable(conveyor_multi_thread_test conveyor_multi_thread_test.cpp)
+
+target_link_libraries(conveyor_multi_thread_test PRIVATE
+    conveyor
+    gtest
+    gmock
+    gtest_main
+)
+
+target_include_directories(conveyor_multi_thread_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+add_test(NAME ConveyorMultiThreadTest COMMAND conveyor_multi_thread_test)
