@@ -95,3 +95,33 @@ target_include_directories(conveyor_partial_io_test PRIVATE
 )
 
 add_test(NAME ConveyorPartialIOTest COMMAND conveyor_partial_io_test)
+
+add_executable(conveyor_illegal_op_test conveyor_illegal_op_test.cpp)
+
+target_link_libraries(conveyor_illegal_op_test PRIVATE
+    conveyor
+    gtest
+    gmock
+    gtest_main
+)
+
+target_include_directories(conveyor_illegal_op_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+add_test(NAME ConveyorIllegalOpTest COMMAND conveyor_illegal_op_test)
+
+add_executable(conveyor_multi_instance_test conveyor_multi_instance_test.cpp)
+
+target_link_libraries(conveyor_multi_instance_test PRIVATE
+    conveyor
+    gtest
+    gmock
+    gtest_main
+)
+
+target_include_directories(conveyor_multi_instance_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+add_test(NAME ConveyorMultiInstanceTest COMMAND conveyor_multi_instance_test)

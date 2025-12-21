@@ -180,6 +180,25 @@ void c_example_usage() {
 
 **Interpretation:** The `readWorker` thread proactively fetches data into the read-ahead cache. The application's read calls are then served instantly from this in-memory buffer, dramatically increasing throughput and reducing perceived latency.
 
+## Testing
+
+`libconveyor` is rigorously tested using a combination of unit, integration, and stress tests to ensure correctness, consistency, and thread-safety. The test suite is built using Google Test.
+
+Our testing approach includes:
+
+*   **Basic C API Tests (`conveyor_test.cpp`):** A suite of tests for the core C-style API, covering basic functionality, latency hiding, and error conditions.
+*   **Modern C++ API Tests (`conveyor_modern_test.cpp`):** A parallel suite of tests for the modern C++17 wrapper, ensuring all features are correctly and safely exposed.
+*   **Stress Tests (`conveyor_stress_test.cpp`):** Tests designed to expose race conditions and complex bugs, including:
+    *   Verifying read-after-write consistency under load.
+    *   Ensuring the "generation counter" prevents stale reads after an `lseek`.
+    *   Testing asynchronous error propagation.
+    *   Verifying complex data snooping and overlap logic.
+*   **Multi-threaded Application Stress Test (`conveyor_multi_thread_test.cpp`):** A dedicated stress test where multiple application threads concurrently read and write to the same conveyor instance to validate the thread-safety of the public API.
+*   **Consistency Tests (`conveyor_consistency_test.cpp`):** Tests for specific data consistency scenarios, such as ensuring a `flush` correctly invalidates the read buffer.
+*   **Partial I/O Tests (`conveyor_partial_io_test.cpp`):** Verifies that the library correctly handles partial reads and writes from the underlying storage.
+*   **Illegal Operation Tests (`conveyor_illegal_op_test.cpp`):** Ensures the API fails gracefully and predictably when used incorrectly (e.g., writing to a read-only conveyor).
+*   **Multi-Instance Tests (`conveyor_multi_instance_test.cpp`):** Checks for data corruption when multiple conveyor instances interact with the same file.
+
 ## Building and Testing
 
 `libconveyor` uses CMake for its build system. It includes comprehensive unit tests, stress tests (using Google Test), and performance benchmarks.
@@ -208,12 +227,19 @@ cmake --build .
 **3. Run Tests**
 ```bash
 # From the build directory
+
 # Run all tests using CTest
 ctest
 
 # Or, run a specific test executable directly
 # ./test/conveyor_basic_test
 # ./test/conveyor_modern_test
+# ./test/conveyor_stress_test
+# ./test/conveyor_multi_thread_test
+# ./test/conveyor_consistency_test
+# ./test/conveyor_partial_io_test
+# ./test/conveyor_illegal_op_test
+# ./test/conveyor_multi_instance_test
 ```
 
 **4. Run Benchmarks**

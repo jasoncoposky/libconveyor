@@ -256,6 +256,11 @@ void conveyor_destroy(conveyor_t* conv) {
 ssize_t conveyor_write(conveyor_t* conv, const void* buf, size_t count) {
     if (!conv) { errno = EBADF; return LIBCONVEYOR_ERROR; }
     auto* impl = reinterpret_cast<libconveyor::ConveyorImpl*>(conv);
+    int mode = impl->flags & O_ACCMODE;
+    if (mode != O_WRONLY && mode != O_RDWR) {
+        errno = EBADF;
+        return LIBCONVEYOR_ERROR;
+    }
 
     if (!impl->write_buffer_enabled) { 
         ssize_t written_bytes = impl->ops.pwrite(impl->handle, buf, count, impl->current_file_offset.load());
