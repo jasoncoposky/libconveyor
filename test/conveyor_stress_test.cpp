@@ -94,7 +94,15 @@ protected:
 // Verifies that data written is immediately available to read, even if not on disk.
 TEST_F(ConveyorStressTest, ImmediateReadAfterWrite) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 4096, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     
     // Make disk writes SLOW to ensure we are reading from the Write Queue (Snoop)
     mock->write_delay_ms = 50;
@@ -121,7 +129,15 @@ TEST_F(ConveyorStressTest, ImmediateReadAfterWrite) {
 // Verifies correct behavior when writing past EOF and reading back immediately.
 TEST_F(ConveyorStressTest, AppendAndReadNewData) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 4096, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     mock->write_delay_ms = 50;
 
     // Move to offset 2MB (past current mock size of 1MB)
@@ -145,7 +161,15 @@ TEST_F(ConveyorStressTest, AppendAndReadNewData) {
 // Verifies that a slow background read doesn't overwrite a new seek.
 TEST_F(ConveyorStressTest, LseekInvalidatesSlowRead) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 4096, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
 
     // 1. Setup Data: Write "AAAA" at 0 and "BBBB" at 5000 directly to mock
     std::memcpy(mock->data.data(), "AAAA", 4);
@@ -185,7 +209,15 @@ TEST_F(ConveyorStressTest, LseekInvalidatesSlowRead) {
 // Verifies that background write failures are reported to the user.
 TEST_F(ConveyorStressTest, ReportsAsyncWriteErrors) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 4096, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
 
     // 1. Queue a successful write
     conveyor_write(conv, "Good", 4);
@@ -218,7 +250,15 @@ TEST_F(ConveyorStressTest, ReportsAsyncWriteErrors) {
 // Complex overlap test for the Phase 2 logic.
 TEST_F(ConveyorStressTest, MixedReadFromDiskAndQueue) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 4096, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     mock->write_delay_ms = 50;
 
     // Mock has "DDDDDDDDDD" (10 bytes)

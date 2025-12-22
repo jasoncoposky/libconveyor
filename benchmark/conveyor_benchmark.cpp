@@ -160,7 +160,15 @@ Result run_conveyor_write_benchmark(int fd, const std::vector<char>& data) {
     storage_operations_t ops = { slow_pwrite, slow_pread, slow_lseek };
     
     // Create conveyor with 5MB buffers
-    conveyor_t* conv = conveyor_create((storage_handle_t)(intptr_t)fd, O_RDWR, &ops, 20 * 1024 * 1024, 1024 * 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = (storage_handle_t)(intptr_t)fd;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 20 * 1024 * 1024;
+    cfg.initial_read_size = 1024 * 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     
     std::vector<double> latencies;
     latencies.reserve(NUM_OPS);
@@ -220,7 +228,7 @@ int main() {
     unlink("benchmark_temp.dat");
     
     double speedup = conv_res.throughput_mbs / raw_res.throughput_mbs;
-    std::cout << ">>> SPEEDUP FACTOR: " << speedup << "x <<<" << "\n";
+    std::cout << ">>> SPEEDUP FACTOR: " << speedup << "x <<<";
 
     return 0;
 }

@@ -133,7 +133,15 @@ Result run_conveyor_read_benchmark(int fd) {
     
     // Create conveyor with 5MB Read Buffer
     // 5MB buffer means it should only need to hit the "disk" twice to read 10MB.
-    conveyor_t* conv = conveyor_create((storage_handle_t)(intptr_t)fd, O_RDONLY, &ops, 0, 5 * 1024 * 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = (storage_handle_t)(intptr_t)fd;
+    cfg.flags = O_RDONLY;
+    cfg.ops = ops;
+    cfg.initial_write_size = 0;
+    cfg.initial_read_size = 5 * 1024 * 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     
     std::vector<double> latencies;
     latencies.reserve(NUM_OPS);
@@ -190,7 +198,7 @@ int main() {
     unlink("benchmark_read.dat");
     
     double speedup = conv_res.throughput_mbs / raw_res.throughput_mbs;
-    std::cout << ">>> READ SPEEDUP FACTOR: " << speedup << "x <<<\n";
+    std::cout << ">>> READ SPEEDUP FACTOR: " << speedup << "x <<<";
     
     return 0;
 }

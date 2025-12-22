@@ -90,10 +90,17 @@ public:
     Conveyor& operator=(const Conveyor&) = delete;
 
     // Factory
-    static Result<Conveyor> create(const Config& cfg) {
-        // In C++17, we pass pointers to ops struct
-        conveyor_t* raw = conveyor_create(cfg.handle, cfg.open_flags, &cfg.ops, 
-                                        cfg.write_capacity, cfg.read_capacity);
+    static Result<Conveyor> create(const Config& cfg_v2) {
+        conveyor_config_t cfg_c = {0};
+        cfg_c.handle = cfg_v2.handle;
+        cfg_c.flags = cfg_v2.open_flags;
+        cfg_c.ops = cfg_v2.ops;
+        cfg_c.initial_write_size = cfg_v2.write_capacity;
+        cfg_c.initial_read_size = cfg_v2.read_capacity;
+        cfg_c.max_write_size = cfg_v2.write_capacity; // For now, initial size is max
+        cfg_c.max_read_size = cfg_v2.read_capacity;   // For now, initial size is max
+        
+        conveyor_t* raw = conveyor_create(&cfg_c);
         if (!raw) {
             return std::error_code(errno, std::system_category());
         }

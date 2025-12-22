@@ -116,7 +116,15 @@ protected:
 // Verifies that the public API is thread-safe when called from multiple app threads.
 TEST_F(ConveyorMultiThreadTest, ConcurrentReadWrite) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 1024 * 1024, 1024 * 1024); // 1MB buffers
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 1024 * 1024;
+    cfg.initial_read_size = 1024 * 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     ASSERT_NE(conv, nullptr);
 
     std::atomic<bool> stop_flag = false;

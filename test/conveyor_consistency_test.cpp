@@ -68,7 +68,15 @@ protected:
 // Verifies that a read after a flush gets the new data, not stale data from the read buffer.
 TEST_F(ConveyorConsistencyTest, ReadFlushRead) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDWR, &ops, 4096, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDWR;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     ASSERT_NE(conv, nullptr);
 
     // 1. Write initial data to the mock storage.

@@ -17,36 +17,48 @@ struct RingBuffer { // Still needed for read buffer
 
     RingBuffer(size_t cap) : capacity(cap), buffer(cap) {}
 
+    // --- NEW: Resize Method ---
+    // Unrolls the circular buffer into a new larger linear buffer.
+    // Thread-Safety: Must be called under lock.
+    void resize(size_t new_capacity) {
+        if (new_capacity <= capacity) return; // Only support growing
+
+        std::vector<char> new_buffer(new_capacity);
+
+        if (size > 0) {
+            if (head > tail) {
+                // Data is in a single contiguous block
+                std::memcpy(new_buffer.data(), buffer.data() + tail, size);
+            } else {
+                // Data is in two parts (wrapped)
+                size_t first_chunk = capacity - tail;
+                std::memcpy(new_buffer.data(), buffer.data() + tail, first_chunk);
+                std::memcpy(new_buffer.data() + first_chunk, buffer.data(), head);
+            }
+        }
+
+        buffer = std::move(new_buffer);
+        capacity = new_capacity;
+        head = size;
+        tail = 0;
+    }
+
     size_t write(const char* data, size_t len) {
         if (len == 0) return 0;
         
-        size_t actual_len = len;
-        if (len > capacity) { // If writing more than capacity, only the last 'capacity' bytes are kept
-            data += (len - capacity);
-            actual_len = capacity;
-        }
-
-        size_t bytes_to_overwrite = 0;
-        if (size + actual_len > capacity) {
-            bytes_to_overwrite = (size + actual_len) - capacity;
-        }
-
-        // Advance tail if overwriting old data
-        if (bytes_to_overwrite > 0) {
-            tail = (tail + bytes_to_overwrite) % capacity;
-            size -= bytes_to_overwrite; // Reduce size by overwritten bytes
-        }
+        size_t bytes_to_write = std::min(len, capacity - size);
+        if (bytes_to_write == 0) return 0;
         
-        size_t first_chunk_len = std::min(actual_len, capacity - head);
+        size_t first_chunk_len = std::min(bytes_to_write, capacity - head);
         std::memcpy(buffer.data() + head, data, first_chunk_len);
 
-        if (actual_len > first_chunk_len) {
-            std::memcpy(buffer.data(), data + first_chunk_len, actual_len - first_chunk_len);
+        if (bytes_to_write > first_chunk_len) {
+            std::memcpy(buffer.data(), data + first_chunk_len, bytes_to_write - first_chunk_len);
         }
-        head = (head + actual_len) % capacity;
-        size += actual_len;
+        head = (head + bytes_to_write) % capacity;
+        size += bytes_to_write;
 
-        return len; // Return original length written
+        return bytes_to_write;
     }
 
     size_t read(char* data, size_t len) {

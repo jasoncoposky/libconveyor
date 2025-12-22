@@ -20,9 +20,12 @@ This library was developed as a foundational component to enhance I/O performanc
 3.  **`readWorker` Thread (Read-Ahead):** Runs in the background, proactively fetching data from storage using `ops.pread()` into its read ring buffer. It anticipates future reads to minimize latency, also checking the **generation counter** to discard stale data after a concurrent `lseek`.
 4.  **`storage_operations_t`:** A set of function pointers (`pwrite`, `pread`, `lseek`) provided during `conveyor_create` that define how `libconveyor` interacts with the specific underlying storage backend.
 
+The **write ring buffer** and **read ring buffer** now dynamically adjust their sizes based on observed I/O patterns and demand, up to a configurable maximum.
+
 ## Features
 
 *   **Dual Ring Buffers:** Separate, configurable buffers for write-behind caching and read-ahead prefetching. The write buffer now uses a **linear ring buffer** for optimal performance, eliminating per-write heap allocations.
+*   **Adaptive Buffer Sizing:** Dynamically adjusts the size of the internal write and read buffers based on observed I/O patterns and demand. This feature automatically grows buffers when needed (e.g., large writes, sequential reads exhausting the read buffer) to optimize throughput, up to a user-defined `max_write_capacity` and `max_read_capacity`.
 *   **I/O Latency Hiding (Asynchronous Writes & Read-Ahead):** Asynchronous background threads perform actual storage operations, allowing application threads to proceed quickly. Writes are now zero-allocation on the hot path.
 *   **Optimized Read-After-Write Consistency (Snooping):** The `conveyor_read` function efficiently "snoops" the write buffer, directly patching newly written data into read requests before it hits disk, ensuring immediate consistency without flushing.
 *   **Robust Thread-Safety:**
@@ -130,14 +133,17 @@ The C API provides a stable, POSIX-like interface for maximum compatibility.
 void c_example_usage() {
     storage_operations_t my_storage_ops = { /* .pwrite = */ my_pwrite, /* ... */ };
     
-    // Create a conveyor
-    conveyor_t* conv = conveyor_create(
-        nullptr, // dummy handle
-        O_RDWR, 
-        &my_storage_ops,
-        1024 * 1024, // 1MB write buffer
-        512 * 1024   // 512KB read buffer
-    );
+    // Configure the conveyor
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr; // dummy handle
+    cfg.flags = O_RDWR;
+    cfg.ops = my_storage_ops;
+    cfg.initial_write_size = 1024 * 1024; // 1MB initial write buffer
+    cfg.max_write_size = 2 * 1024 * 1024; // Max 2MB write buffer
+    cfg.initial_read_size = 512 * 1024;   // 512KB initial read buffer
+    cfg.max_read_size = 1 * 1024 * 1024;  // Max 1MB read buffer
+
+    conveyor_t* conv = conveyor_create(&cfg);
 
     if (!conv) {
         perror("Failed to create conveyor");
@@ -160,14 +166,14 @@ void c_example_usage() {
 
 ### Write Benchmark
 
-**Scenario:** Write 10MB of data in 4KB blocks with a simulated backend latency of ~15ms per block.
+**Scenario:** Write 10MB of data in 4KB blocks with a simulated backend latency of 2ms per block.
 
-| Benchmark                  | Total Time (ms) | Throughput (MB/s) | Avg Latency (us) |
-| :------------------------- | :-------------- | :---------------- | :--------------- |
-| **Raw POSIX Write** (Blocking) | 36739.7         | 0.272             | 14351.2          |
-| **libconveyor Write** (Async)  | 1.8625          | 5369.13           | 0.700            |
+| Benchmark                  | Total Time (ms) | Throughput (MB/s) | Avg Latency (us) | P99 Latency (us) |
+| :------------------------- | :-------------- | :---------------- | :--------------- | :--------------- |
+| **Raw POSIX Write** (Blocking) | 41518.9         | 0.240854          | 16218.1          | 16683.9          |
+| **libconveyor Write** (Async)  | 1.4705          | 6800.41           | 0.544609         | 5.9              |
 
-**Interpretation:** The "Raw POSIX Write" scenario is blocked waiting for each slow write operation. The "libconveyor" scenario measures only the time to enqueue the writes into memory, which is extremely fast. This demonstrates the library's ability to nearly eliminate perceived write latency.
+**Interpretation:** The "Raw POSIX Write" scenario is blocked waiting for each slow write operation. The "libconveyor" scenario measures only the time to enqueue the writes into memory, which is extremely fast. This demonstrates the library's ability to nearly eliminate perceived write latency. The adaptive buffer sizing ensures that the write buffer dynamically scales to handle bursts of data, further optimizing throughput without requiring manual tuning of buffer sizes.
 
 ### Read Benchmark
 
@@ -175,10 +181,10 @@ void c_example_usage() {
 
 | Benchmark                      | Total Time (ms) | Throughput (MB/s) | Avg Latency (us) |
 | :----------------------------- | :-------------- | :---------------- | :--------------- |
-| **Raw POSIX Read** (Blocking)  | 7095.91         | 1.40926           | 2768.12          |
-| **libconveyor Read** (Prefetching) | 12.3602         | 809.048           | 4.72941          |
+| **Raw POSIX Read** (Blocking)  | 41580.9         | 0.240495          | 16242.3          |
+| **libconveyor Read** (Prefetching) | 46.591          | 214.634           | 18.1807          |
 
-**Interpretation:** The `readWorker` thread proactively fetches data into the read-ahead cache. The application's read calls are then served instantly from this in-memory buffer, dramatically increasing throughput and reducing perceived latency.
+**Interpretation:** The `readWorker` thread proactively fetches data into the read-ahead cache. The application's read calls are then served instantly from this in-memory buffer, dramatically increasing throughput and reducing perceived latency. The adaptive read buffer intelligently grows when sequential access patterns are detected, optimizing prefetching for sustained high-speed reads.
 
 ## Testing
 
@@ -188,6 +194,7 @@ Our testing approach includes:
 
 *   **Basic C API Tests (`conveyor_test.cpp`):** A suite of tests for the core C-style API, covering basic functionality, latency hiding, and error conditions.
 *   **Modern C++ API Tests (`conveyor_modern_test.cpp`):** A parallel suite of tests for the modern C++17 wrapper, ensuring all features are correctly and safely exposed.
+*   **Adaptive Buffer Tests (`adaptive_test.cpp`):** Dedicated tests for the adaptive buffer sizing logic, including scenarios that force buffer resizing while wrapped, and verification of read buffer growth heuristics.
 *   **Stress Tests (`conveyor_stress_test.cpp`):** Tests designed to expose race conditions and complex bugs, including:
     *   Verifying read-after-write consistency under load.
     *   Ensuring the "generation counter" prevents stale reads after an `lseek`.
@@ -221,7 +228,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 **2. Build the Project**
 ```bash
 # From the build directory
-cmake --build .
+cmake --build . --config Release
 ```
 
 **3. Run Tests**
@@ -229,17 +236,18 @@ cmake --build .
 # From the build directory
 
 # Run all tests using CTest
-ctest
+ctest --build-config Release
 
 # Or, run a specific test executable directly
-# ./test/conveyor_basic_test
-# ./test/conveyor_modern_test
-# ./test/conveyor_stress_test
-# ./test/conveyor_multi_thread_test
-# ./test/conveyor_consistency_test
-# ./test/conveyor_partial_io_test
-# ./test/conveyor_illegal_op_test
-# ./test/conveyor_multi_instance_test
+# ./test/Release/conveyor_basic_test.exe
+# ./test/Release/conveyor_modern_test.exe
+# ./test/Release/conveyor_stress_test.exe
+# ./test/Release/conveyor_multi_thread_test.exe
+# ./test/Release/conveyor_consistency_test.exe
+# ./test/Release/conveyor_partial_io_test.exe
+# ./test/Release/conveyor_illegal_op_test.exe
+# ./test/Release/conveyor_multi_instance_test.exe
+# ./test/Release/adaptive_test.exe
 ```
 
 **4. Run Benchmarks**
@@ -247,10 +255,10 @@ ctest
 # From the build directory (use Release build for meaningful results)
 
 # Run write benchmark
-./benchmark/conveyor_benchmark
+./benchmark/Release/conveyor_benchmark.exe
 
 # Run read benchmark
-./benchmark/conveyor_read_benchmark
+./benchmark/Release/conveyor_read_benchmark.exe
 ```
 
 ## Contributing

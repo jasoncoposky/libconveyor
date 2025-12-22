@@ -100,7 +100,15 @@ void reset_mock_storage() {
 void test_create_destroy() {
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(nullptr, O_RDWR, &mock_ops, 1024, 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_RDWR;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 1024;
+    cfg.max_write_size = cfg.initial_write_size; // Use initial as max
+    cfg.max_read_size = cfg.initial_read_size;  // Use initial as max
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
     conveyor_destroy(conv);
 }
@@ -108,7 +116,15 @@ void test_create_destroy() {
 void test_write_and_flush() {
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY, &mock_ops, 1024, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     std::string test_data = "Hello, Conveyor!";
@@ -129,7 +145,15 @@ void test_buffered_read() {
     std::string test_data = "This is a test of the buffered read functionality.";
     mock_pwrite(nullptr, test_data.c_str(), test_data.length(), 0);
 
-    conveyor_t* conv = conveyor_create(nullptr, O_RDONLY, &mock_ops, 0, 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_RDONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 0;
+    cfg.initial_read_size = 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
     
     std::vector<char> read_buffer(test_data.length() + 1, '\0');
@@ -146,7 +170,15 @@ void test_fast_write_hiding() {
     g_simulate_slow_write = true;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY, &mock_ops, 1024, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     std::string test_data = "This should write instantly.";
@@ -173,7 +205,15 @@ void test_fast_read_hiding() {
     std::string test_data = "This should be read instantly from cache.";
     mock_pwrite(nullptr, test_data.c_str(), test_data.length(), 0);
 
-    conveyor_t* conv = conveyor_create(nullptr, O_RDONLY, &mock_ops, 0, 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_RDONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 0;
+    cfg.initial_read_size = 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
     
     std::this_thread::sleep_for(g_simulated_latency + std::chrono::milliseconds(50)); // Give readWorker time to pre-fill
@@ -196,7 +236,15 @@ void test_fast_read_hiding() {
 void test_zero_byte_operations() {
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(nullptr, O_RDWR, &mock_ops, 1024, 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_RDWR;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
     
     ssize_t bytes_written = conveyor_write(conv, "should not be written", 0);
@@ -213,7 +261,15 @@ void test_read_sees_unflushed_write() {
     reset_mock_storage();
     g_simulate_slow_write = true;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(nullptr, O_RDWR, &mock_ops, 100, 100);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_RDWR;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 100;
+    cfg.initial_read_size = 100;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     std::string test_data = "ABCDE";
@@ -256,7 +312,15 @@ void test_slow_backend_saturation() {
     const size_t item_size = 100;
     std::string item_data(item_size, 'X');
 
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY, &mock_ops, write_buffer_capacity, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = write_buffer_capacity;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
     std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Give writeWorker a chance to start
 
@@ -313,7 +377,15 @@ void test_lseek_invalidation() {
     g_pread_alternating_counter = 0;
     storage_operations_t mock_ops = {mock_pwrite, mock_pread_alternating, mock_lseek};
 
-    conveyor_t* conv = conveyor_create(nullptr, O_RDONLY, &mock_ops, 0, 1024);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_RDONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 0;
+    cfg.initial_read_size = 1024;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     // 1. Read the first version of the data
@@ -349,7 +421,15 @@ void test_sticky_error_propagation() {
     g_pwrite_fail_after_n = 5; // Fail after 5 successful writes
 
     storage_operations_t mock_ops = {mock_pwrite_fail_after_n_writes, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY, &mock_ops, 1024, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
     
     std::string test_data = "ABCDE"; // 5 bytes
@@ -394,7 +474,15 @@ void test_write_larger_than_buffer() {
     reset_mock_storage();
     storage_operations_t mock_ops = {mock_pwrite, mock_pread, mock_lseek};
     
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY, &mock_ops, 100, 0); // 100 byte buffer
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 100;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = 0;
+    cfg.max_read_size = 0;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     std::string large_data(200, 'X'); // 200 bytes
@@ -414,7 +502,15 @@ void test_o_append_mode() {
     std::string initial_data = "Initial data. ";
     mock_pwrite(nullptr, initial_data.c_str(), initial_data.length(), 0);
 
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY | O_APPEND, &mock_ops, 1024, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY | O_APPEND;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr for O_APPEND");
 
     std::string append_data1 = "Appended data 1. ";
@@ -435,7 +531,15 @@ void test_clear_error() {
     reset_mock_storage();
     g_pwrite_fail_once_counter = 0;
     storage_operations_t mock_ops = {mock_pwrite_fail_once, mock_pread, mock_lseek};
-    conveyor_t* conv = conveyor_create(nullptr, O_WRONLY, &mock_ops, 1024, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = nullptr;
+    cfg.flags = O_WRONLY;
+    cfg.ops = mock_ops;
+    cfg.initial_write_size = 1024;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conveyor_t* conv = conveyor_create(&cfg);
     TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
     std::string test_data = "some data";
@@ -480,7 +584,15 @@ void test_destructor_teardown_race() {
 
         storage_operations_t mock_ops = {mock_pwrite, mock_pread_block, mock_lseek};
 
-        conveyor_t* conv = conveyor_create(nullptr, O_RDONLY, &mock_ops, 0, 4096);
+        conveyor_config_t cfg = {0};
+        cfg.handle = nullptr;
+        cfg.flags = O_RDONLY;
+        cfg.ops = mock_ops;
+        cfg.initial_write_size = 0;
+        cfg.initial_read_size = 4096;
+        cfg.max_write_size = cfg.initial_write_size;
+        cfg.max_read_size = cfg.initial_read_size;
+        conveyor_t* conv = conveyor_create(&cfg);
         TEST_ASSERT(conv != nullptr, "conveyor_create returned nullptr");
 
         std::thread read_thread([&]() {

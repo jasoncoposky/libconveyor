@@ -57,14 +57,20 @@ typedef struct {
 
 // --- API Functions ---
 
-// Creates a conveyor instance with specified buffer sizes and open flags
-conveyor_t* conveyor_create(
-    storage_handle_t handle,
-    int flags,
-    const storage_operations_t* ops,
-    size_t write_buffer_size,
-    size_t read_buffer_size
-);
+// Configuration for creating a conveyor instance
+typedef struct {
+    storage_handle_t handle;
+    int flags;
+    storage_operations_t ops;
+    size_t initial_write_size;
+    size_t initial_read_size;
+    size_t max_write_size;
+    size_t max_read_size;
+} conveyor_config_t;
+
+// Creates a conveyor instance with the specified configuration
+conveyor_t* conveyor_create(const conveyor_config_t* cfg);
+
 
 // Destroys the conveyor, flushing any remaining data in the write buffer
 void conveyor_destroy(conveyor_t* conv);

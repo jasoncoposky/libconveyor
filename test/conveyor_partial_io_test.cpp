@@ -86,7 +86,15 @@ protected:
 
 TEST_F(ConveyorPartialIOTest, PartialWrite) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_WRONLY, &ops, 4096, 0);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_WRONLY;
+    cfg.ops = ops;
+    cfg.initial_write_size = 4096;
+    cfg.initial_read_size = 0;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     ASSERT_NE(conv, nullptr);
 
     std::string data = "ThisIsAUnitTestForPartialWrites";
@@ -105,7 +113,15 @@ TEST_F(ConveyorPartialIOTest, PartialWrite) {
 
 TEST_F(ConveyorPartialIOTest, PartialRead) {
     auto ops = mock->get_ops();
-    conv = conveyor_create(mock, O_RDONLY, &ops, 0, 4096);
+    conveyor_config_t cfg = {0};
+    cfg.handle = mock;
+    cfg.flags = O_RDONLY;
+    cfg.ops = ops;
+    cfg.initial_write_size = 0;
+    cfg.initial_read_size = 4096;
+    cfg.max_write_size = cfg.initial_write_size;
+    cfg.max_read_size = cfg.initial_read_size;
+    conv = conveyor_create(&cfg);
     ASSERT_NE(conv, nullptr);
 
     std::string data = "ThisIsAUnitTestForPartialReads";

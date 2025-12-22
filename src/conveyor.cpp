@@ -30,6 +30,10 @@ struct ConveyorImpl {
     int flags;
     storage_operations_t ops;
 
+    // --- ADAPTIVE CONFIG ---
+    size_t max_write_capacity = 0;
+    size_t max_read_capacity = 0;
+
     // Write Logic
     bool write_buffer_enabled = false;
     RingBuffer write_ring_buffer; // <--- The Write Buffer
@@ -59,6 +63,10 @@ struct ConveyorImpl {
     std::atomic<off_t> read_head_in_storage{0};
     std::atomic<off_t> current_file_offset{0};
 
+    // New Tracking for Read Heuristics
+    off_t last_read_end_offset = 0;
+    size_t sequential_read_counter = 0;
+
     struct Stats {
         std::atomic<size_t> bytes_written{0};
         std::atomic<size_t> bytes_read{0};
@@ -71,7 +79,8 @@ struct ConveyorImpl {
     } stats;
     
     ConveyorImpl(size_t w_cap, size_t r_cap) 
-        : write_ring_buffer(w_cap), read_buffer(r_cap) {}
+        : write_ring_buffer(w_cap), read_buffer(r_cap),
+          max_write_capacity(w_cap), max_read_capacity(r_cap) {} // Default max = initial
 
     void writeWorker() {
         // Optimization: Reusable scratch buffer to handle ring-wrap-around
@@ -162,7 +171,6 @@ struct ConveyorImpl {
 
     void readWorker() {
         std::vector<char> temp_buffer;
-        temp_buffer.reserve(read_buffer.capacity);
         while (true) {
             std::unique_lock<std::mutex> lock(read_mutex);
             read_cv_producer.wait(lock, [&] { 
@@ -174,7 +182,10 @@ struct ConveyorImpl {
                 uint64_t my_gen = read_buffer_generation.load();
                 
                 off_t read_pos = current_file_offset + read_buffer.available_data();
+                
+                // --- CRITICAL: Read full available space (which might have grown!) ---
                 size_t n = read_buffer.available_space();
+                if (temp_buffer.capacity() < n) temp_buffer.reserve(n); // Grow scratch if needed
                 temp_buffer.resize(n);
                 
                 lock.unlock(); 
@@ -207,12 +218,19 @@ struct ConveyorImpl {
 };
 } // namespace libconveyor
 
-conveyor_t* conveyor_create(storage_handle_t h, int f, const storage_operations_t* o, size_t w, size_t r) {
-    auto* impl = new libconveyor::ConveyorImpl(w, r);
-    impl->handle = h; impl->flags = f; impl->ops = *o;
-    int mode = f & O_ACCMODE;
-    impl->read_buffer_enabled = (mode == O_RDONLY || mode == O_RDWR) && (r > 0);
-    impl->write_buffer_enabled = (mode == O_WRONLY || mode == O_RDWR) && (w > 0);
+conveyor_t* conveyor_create(const conveyor_config_t* cfg) {
+    if (!cfg) { errno = EINVAL; return nullptr; }
+    auto* impl = new libconveyor::ConveyorImpl(cfg->initial_write_size, cfg->initial_read_size);
+    impl->handle = cfg->handle;
+    impl->flags = cfg->flags;
+    impl->ops = cfg->ops;
+    impl->max_write_capacity = (cfg->max_write_size > 0) ? cfg->max_write_size : cfg->initial_write_size;
+    impl->max_read_capacity  = (cfg->max_read_size > 0)  ? cfg->max_read_size  : cfg->initial_read_size;
+    
+    int mode = cfg->flags & O_ACCMODE;
+    impl->read_buffer_enabled = (mode == O_RDONLY || mode == O_RDWR) && (cfg->initial_read_size > 0);
+    impl->write_buffer_enabled = (mode == O_WRONLY || mode == O_RDWR) && (cfg->initial_write_size > 0);
+
     if (impl->read_buffer_enabled) {
         impl->read_worker_thread = std::thread(&libconveyor::ConveyorImpl::readWorker, impl);
         std::unique_lock<std::mutex> lock(impl->read_mutex);
@@ -221,13 +239,13 @@ conveyor_t* conveyor_create(storage_handle_t h, int f, const storage_operations_
     }
     if (impl->write_buffer_enabled) {
         if (impl->flags & O_APPEND) {
-            off_t initial_file_size = impl->ops.lseek(impl->handle, 0, SEEK_END);
-            if (initial_file_size == LIBCONVEYOR_ERROR) {
+            off_t sz = impl->ops.lseek(impl->handle, 0, SEEK_END);
+            if (sz == LIBCONVEYOR_ERROR) {
                 conveyor_destroy(reinterpret_cast<conveyor_t*>(impl));
                 return nullptr;
             }
-            impl->logical_write_offset = initial_file_size;
-            impl->current_file_offset = initial_file_size; 
+            impl->logical_write_offset = sz;
+            impl->current_file_offset = sz; 
         }
         impl->write_worker_thread = std::thread(&libconveyor::ConveyorImpl::writeWorker, impl);
     }
@@ -261,46 +279,52 @@ ssize_t conveyor_write(conveyor_t* conv, const void* buf, size_t count) {
         errno = EBADF;
         return LIBCONVEYOR_ERROR;
     }
+    
+    if (count > impl->max_write_capacity) {
+        errno = EMSGSIZE;
+        return LIBCONVEYOR_ERROR;
+    }
 
     if (!impl->write_buffer_enabled) { 
-        ssize_t written_bytes = impl->ops.pwrite(impl->handle, buf, count, impl->current_file_offset.load());
-        if (written_bytes > 0) {
-            impl->current_file_offset += written_bytes;
-            impl->stats.bytes_written += written_bytes;
-        }
-        return written_bytes;
+        return impl->ops.pwrite(impl->handle, buf, count, impl->current_file_offset.load());
     }
 
     if (impl->stats.last_error_code.load() != 0) { errno = impl->stats.last_error_code.load(); return LIBCONVEYOR_ERROR; }
 
-    if (count > impl->write_ring_buffer.capacity) {
-        errno = EMSGSIZE;
-        return LIBCONVEYOR_ERROR;
-    }
-    
     std::unique_lock<std::mutex> lock(impl->write_mutex);    
-    if (impl->write_ring_buffer.available_space() < count) {
-        impl->stats.write_buffer_full_events++;
-    }
     
-    // Wait until there is space in the RingBuffer
+    // --- ADAPTIVE WRITE: Grow on Pressure ---
+    if (impl->write_ring_buffer.available_space() < count) {
+        if (impl->write_ring_buffer.capacity < impl->max_write_capacity) {
+            // FLUSH LOGIC
+            if (!impl->write_queue.empty()) {
+                impl->write_buffer_needs_flush = true;
+                impl->write_cv_consumer.notify_one();
+                impl->write_cv_producer.wait(lock, [&] { return impl->write_queue.empty() || impl->write_worker_stop_flag; });
+            }
+            impl->write_buffer_needs_flush = false;
+
+            size_t needed = impl->write_ring_buffer.size + count;
+            size_t new_cap = impl->write_ring_buffer.capacity * 2;
+            if (new_cap < needed) new_cap = needed;
+            if (new_cap > impl->max_write_capacity) new_cap = impl->max_write_capacity;
+            
+            if (new_cap >= needed) impl->write_ring_buffer.resize(new_cap);
+        }
+    }
+    // ----------------------------------------
+
+    if (impl->write_ring_buffer.available_space() < count) impl->stats.write_buffer_full_events++;
+    
     if(!impl->write_cv_producer.wait_for(lock, std::chrono::seconds(30), [&]{ 
         return (impl->write_ring_buffer.available_space() >= count) || impl->write_worker_stop_flag; 
-    })) {
-        errno = ETIMEDOUT;
-        return LIBCONVEYOR_ERROR;
-    }
+    })) { errno = ETIMEDOUT; return LIBCONVEYOR_ERROR; }
 
     if (impl->write_worker_stop_flag) return LIBCONVEYOR_ERROR;
 
-    // --- OPTIMIZED WRITE ---
-    // 1. Record where we are writing in the ring (for snooping)
     size_t ring_pos_start = impl->write_ring_buffer.head;
-    
-    // 2. Write data to RingBuffer (Fast memcpy)
     impl->write_ring_buffer.write(static_cast<const char*>(buf), count);
     
-    // 3. Push lightweight metadata
     libconveyor::WriteRequest req;
     req.file_offset = impl->current_file_offset.load();
     req.length = count;
@@ -325,26 +349,44 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
     off_t start_offset = impl->current_file_offset.load();
     ssize_t total_read = 0;
 
-    // --- Phase 1: Read from read_buffer / storage ---
     {
         std::unique_lock<std::mutex> read_lock(impl->read_mutex);
-        off_t current_read_pos = start_offset;
+        
+        // --- ADAPTIVE READ: Heuristic Logic ---
+        bool grow = false;
+        
+        // Trigger 1: Request larger than buffer
+        if (count > impl->read_buffer.capacity) grow = true;
+        
+        // Trigger 2: Sequential exhaustion (Buffer empty + Sequential Read)
+        if (impl->read_buffer.empty() && start_offset == impl->last_read_end_offset) {
+            impl->sequential_read_counter++;
+            // If we hit empty buffer sequentially 3 times, assume bandwidth mismatch -> Grow
+            if (impl->sequential_read_counter > 2) grow = true;
+        } else {
+            impl->sequential_read_counter = 0; // Reset on random seek
+        }
 
+        if (grow && impl->read_buffer.capacity < impl->max_read_capacity) {
+            size_t new_cap = impl->read_buffer.capacity * 2;
+            if (new_cap < count) new_cap = count; // Ensure we fit the specific request
+            if (new_cap > impl->max_read_capacity) new_cap = impl->max_read_capacity;
+            
+            // Resize immediately. readWorker will see new capacity on next loop.
+            impl->read_buffer.resize(new_cap);
+        }
+        impl->last_read_end_offset = start_offset + count;
+        // ----------------------------------------
+
+        off_t current_read_pos = start_offset;
         while (total_read < count && !impl->read_worker_stop_flag.load()) {
             if (impl->read_buffer.empty()) {
-                if (impl->read_eof_flag.load() && (current_read_pos >= impl->read_head_in_storage.load())) {
-                    break;
-                }
+                if (impl->read_eof_flag.load() && (current_read_pos >= impl->read_head_in_storage.load())) break;
                 impl->read_worker_needs_fill = true;
                 impl->read_cv_producer.notify_one();
-                impl->read_cv_consumer.wait(read_lock, [&]{ 
-                    return impl->read_buffer.available_data() > 0 || impl->read_worker_stop_flag.load(); 
-                });
-                if (impl->read_buffer.available_data() == 0) {
-                    break;
-                }
+                impl->read_cv_consumer.wait(read_lock, [&]{ return impl->read_buffer.available_data() > 0 || impl->read_worker_stop_flag.load(); });
+                if (impl->read_buffer.available_data() == 0) break;
             }
-
             size_t read_now = impl->read_buffer.read(ptr + total_read, count - total_read);
             total_read += read_now;
             current_read_pos += read_now;
@@ -352,45 +394,27 @@ ssize_t conveyor_read(conveyor_t* conv, void* buf, size_t count) {
         }
     } 
 
-    // --- Phase 2: Apply overlays from write_queue (Snoop) ---
-    // We check if write_queue has data for the REQUESTED range, not just the read range.
     if (impl->write_buffer_enabled) {
         std::unique_lock<std::mutex> write_lock(impl->write_mutex);
-        
         off_t requested_read_end = start_offset + count;
-        
         for (const auto& req : impl->write_queue) {
             off_t write_start = req.file_offset;
             off_t write_end = req.file_offset + req.length;
-            
             off_t overlap_start = std::max(start_offset, write_start);
             off_t overlap_end = std::min(requested_read_end, write_end);
-
             if (overlap_start < overlap_end) {
                 size_t len = static_cast<size_t>(overlap_end - overlap_start);
                 size_t dest_idx = static_cast<size_t>(overlap_start - start_offset);
-                
-                // Calculate where in the RingBuffer this data is
-                // Offset inside the specific write request
                 size_t offset_in_req = static_cast<size_t>(overlap_start - write_start);
-                
-                // Absolute pos in RingBuffer
                 size_t ring_abs_pos = req.ring_buffer_pos + offset_in_req;
-                
-                // Peek directly from RingBuffer (handling wrapping)
                 impl->write_ring_buffer.peek_at(ring_abs_pos, ptr + dest_idx, len);
-
                 size_t bytes_covered = dest_idx + len;
-                if (bytes_covered > total_read) {
-                    total_read = bytes_covered;
-                }
+                if (bytes_covered > total_read) total_read = bytes_covered;
             }
         }
     }
 
-    // FIX: Update global offset based on total bytes read (disk + snoop)
     impl->current_file_offset = start_offset + total_read;
-    
     impl->stats.bytes_read += total_read;
     return total_read;
 }
@@ -420,6 +444,8 @@ off_t conveyor_lseek(conveyor_t* conv, off_t offset, int whence) {
         }
         impl->current_file_offset = new_pos;
         impl->read_head_in_storage = new_pos;
+        // Reset heuristics
+        impl->sequential_read_counter = 0;
     }
     return new_pos;
 }

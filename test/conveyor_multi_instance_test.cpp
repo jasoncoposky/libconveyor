@@ -70,8 +70,25 @@ protected:
 
 TEST_F(ConveyorMultiInstanceTest, OverlappingWrites) {
     auto ops = mock->get_ops();
-    conv1 = conveyor_create(mock, O_RDWR, &ops, 1024, 0);
-    conv2 = conveyor_create(mock, O_RDWR, &ops, 1024, 0);
+    conveyor_config_t cfg1 = {0};
+    cfg1.handle = mock;
+    cfg1.flags = O_RDWR;
+    cfg1.ops = ops;
+    cfg1.initial_write_size = 1024;
+    cfg1.initial_read_size = 0;
+    cfg1.max_write_size = cfg1.initial_write_size;
+    cfg1.max_read_size = cfg1.initial_read_size;
+    conv1 = conveyor_create(&cfg1);
+
+    conveyor_config_t cfg2 = {0};
+    cfg2.handle = mock;
+    cfg2.flags = O_RDWR;
+    cfg2.ops = ops;
+    cfg2.initial_write_size = 1024;
+    cfg2.initial_read_size = 0;
+    cfg2.max_write_size = cfg2.initial_write_size;
+    cfg2.max_read_size = cfg2.initial_read_size;
+    conv2 = conveyor_create(&cfg2);
     ASSERT_NE(conv1, nullptr);
     ASSERT_NE(conv2, nullptr);
 
