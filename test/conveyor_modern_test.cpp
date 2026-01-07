@@ -5,6 +5,7 @@
 #include <string>
 #include <cstring>
 #include <numeric>
+#include <thread>
 
 using namespace libconveyor::v2;
 using ::testing::_;
@@ -139,11 +140,11 @@ TEST_F(ConveyorModernTest, WriteAndFlush) {
             return static_cast<ssize_t>(count);
         }));
     
-    auto write_res = conveyor.write(test_data);
+    auto write_res = conveyor->write(test_data);
     ASSERT_TRUE(write_res.has_value()) << write_res.error().message();
     ASSERT_EQ(write_res.value(), test_data.size());
 
-    auto flush_res = conveyor.flush();
+    auto flush_res = conveyor->flush();
     ASSERT_TRUE(flush_res.has_value()) << flush_res.error().message();
     
     // Verify mock storage contains data
@@ -173,7 +174,7 @@ TEST_F(ConveyorModernTest, ReadFromDisk) {
         }));
     
     std::vector<char> read_buf(initial_data.size()); // Using std::vector<char> for C++17 compatibility
-    auto read_res = conveyor.read(read_buf);
+    auto read_res = conveyor->read(read_buf);
 
     ASSERT_TRUE(read_res.has_value()) << read_res.error().message();
     ASSERT_EQ(read_res.value(), initial_data.size());
@@ -193,11 +194,11 @@ TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
 
     // Write new data that will be in the write queue
     std::string new_data = "NEW_DATA";
-    conveyor.write(new_data).value(); // Write new data, it's buffered
+    conveyor->write(new_data).value(); // Write new data, it's buffered
 
     // Seek back to the beginning. This will invalidate the read buffer, but the
     // unflushed data is still in the write queue.
-    conveyor.seek(0).value(); 
+    conveyor->seek(0).value(); 
 
     // Give the read worker a moment to potentially (and incorrectly) fill the 
     // read buffer with stale data from the mock storage. This makes the test
@@ -205,7 +206,7 @@ TEST_F(ConveyorModernTest, ReadFromWriteQueueSnoop) {
     std::this_thread::sleep_for(10ms);
 
     std::vector<char> read_buf(new_data.size());
-    auto read_res = conveyor.read(read_buf);
+    auto read_res = conveyor->read(read_buf);
 
     ASSERT_TRUE(read_res.has_value()) << read_res.error().message();
     ASSERT_EQ(read_res.value(), new_data.size());
@@ -222,7 +223,7 @@ TEST_F(ConveyorModernTest, Seek) {
     auto conveyor = std::move(conveyor_res.value());
 
     EXPECT_CALL(*mock_storage, lseek_mock(_, 100, SEEK_SET)).WillOnce(Return(static_cast<off_t>(100)));
-    auto seek_res = conveyor.seek(100);
+    auto seek_res = conveyor->seek(100);
     ASSERT_TRUE(seek_res.has_value()) << seek_res.error().message();
     ASSERT_EQ(seek_res.value(), 100);
 }
@@ -236,11 +237,11 @@ TEST_F(ConveyorModernTest, Stats) {
     ASSERT_TRUE(conveyor_res.has_value()) << conveyor_res.error().message();
     auto conveyor = std::move(conveyor_res.value());
 
-    conveyor.write(std::string(10, 'A')).value();
-    auto flush_res = conveyor.flush();
+    conveyor->write(std::string(10, 'A')).value();
+    auto flush_res = conveyor->flush();
     ASSERT_TRUE(flush_res.has_value()) << flush_res.error().message();
 
-    auto stats = conveyor.stats();
+    auto stats = conveyor->stats();
     ASSERT_EQ(stats.bytes_written, 10);
     ASSERT_GT(stats.avg_write_latency.count(), 0); // Should have some latency
 }
@@ -263,7 +264,7 @@ TEST_F(ConveyorModernTest, RaIiDestroys) {
         auto conveyor_res = Conveyor::create(cfg);
         ASSERT_TRUE(conveyor_res.has_value());
         auto conveyor = std::move(conveyor_res.value());
-        conveyor.write(std::string(10, 'B'));
+        conveyor->write(std::string(10, 'B'));
         // conveyor_flush() will be called implicitly by destructor
     }
     // If we reach here without crash, RAII worked.
@@ -285,15 +286,15 @@ TEST_F(ConveyorModernTest, ErrorPropagation) {
     ASSERT_TRUE(conveyor_res.has_value());
     auto conveyor = std::move(conveyor_res.value());
 
-    auto write_res = conveyor.write(std::string(10, 'C'));
+    auto write_res = conveyor->write(std::string(10, 'C'));
     ASSERT_TRUE(write_res.has_value()); // Initial write is enqueued
     
-    auto flush_res = conveyor.flush();
+    auto flush_res = conveyor->flush();
     ASSERT_FALSE(flush_res.has_value()); // Flush should report error
     ASSERT_EQ(flush_res.error(), std::error_code(EIO, std::system_category()));
     
     // Subsequent operations should also report error
-    auto subsequent_write_res = conveyor.write(std::string(10, 'D'));
+    auto subsequent_write_res = conveyor->write(std::string(10, 'D'));
     ASSERT_FALSE(subsequent_write_res.has_value());
     ASSERT_EQ(subsequent_write_res.error(), std::error_code(EIO, std::system_category()));
 }

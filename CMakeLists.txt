@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(libconveyor CXX)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+include(CMakePackageConfigHelpers)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(conveyor STATIC
     src/conveyor.cpp
 )
+set_target_properties(conveyor PROPERTIES CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Specify include directories
 target_include_directories(conveyor PUBLIC
@@ -15,11 +19,20 @@ target_include_directories(conveyor PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-# Install rules (optional, but good practice for libraries)
+# --- Exports ---
+# This creates the `conveyor-targets.cmake` file in the build directory
+export(TARGETS conveyor
+    FILE conveyor-targets.cmake
+    NAMESPACE libconveyor::
+)
+
+# --- Installation ---
 install(TARGETS conveyor
-    EXPORT conveyor_targets
-    ARCHIVE DESTINATION lib
+    EXPORT conveyor-targets
     LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
 )
 
 install(DIRECTORY include/libconveyor/
@@ -28,20 +41,19 @@ install(DIRECTORY include/libconveyor/
 )
 
 # Export package for find_package()
-install(EXPORT conveyor_targets
-    FILE conveyorTargets.cmake
-    NAMESPACE conveyor::
-    DESTINATION lib/cmake/conveyor
+install(EXPORT conveyor-targets
+    FILE conveyor-targets.cmake
+    NAMESPACE libconveyor::
+    DESTINATION lib/cmake/libconveyor
 )
+
+include(CMakePackageConfigHelpers)
+
+# ... (rest of the file until the config part)
 
 # Generate a config file for find_package()
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/conveyorConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/conveyorConfig.cmake
-    @ONLY
-)
-
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/conveyorConfig.cmake
-    DESTINATION lib/cmake/conveyor
+configure_package_config_file(conveyorConfig.cmake.in libconveyorConfig.cmake
+    INSTALL_DESTINATION lib/cmake/libconveyor
 )
 
 
