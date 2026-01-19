@@ -51,10 +51,9 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/conveyorConfig.cmake
 # Add the test subdirectory
 
 # Enable testing
-enable_testing()
-
-# Add googletest
-add_subdirectory(external/googletest)
-
-add_subdirectory(test)
-add_subdirectory(benchmark)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(external/googletest)
+    add_subdirectory(test)
+    add_subdirectory(benchmark)
+endif()
