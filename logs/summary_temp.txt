@@ -1,0 +1,37 @@
+
+### Progress Review (Sunday, December 14, 2025)
+
+**Initial Goal:** Design and implement `libconveyor`, a C++ library for dual ring buffering to be used in an iRODS resource plugin.
+
+**Architectural Design:**
+*   We designed the `libconveyor` API, including a `conveyor_t` handle and POSIX-like functions (`conveyor_create`, `read`, `write`, `lseek`, `destroy`, `flush`).
+*   We defined a `storage_operations_t` struct with callbacks to make the library independent of the underlying storage.
+*   We discussed and incorporated handling for file open flags (`O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_APPEND`, `O_TRUNC`).
+*   We discussed iRODS-specific integration points like `resolve_resource_hierarchy` and voting behavior.
+
+**Project Scaffolding:**
+*   Created the directory structure (`include`, `src`, `test`).
+*   Created initial header (`conveyor.h`), source (`conveyor.cpp`), and build (`CMakeLists.txt`) files.
+
+**Core Implementation:**
+*   Implemented the internal `ConveyorImpl` struct with data structures for read/write buffers, mutexes, condition variables, and worker threads.
+*   Implemented the `writeWorker` and `readWorker` background threads for asynchronous I/O.
+*   Implemented the public API functions (`create`, `destroy`, `write`, `read`, `lseek`, `flush`) to interact with the buffers and worker threads.
+
+**Testing Setup & Iteration (The Hard Part):**
+*   **GTest Failure:** Attempted to integrate Google Test, but ran into persistent CMake policy errors due to a non-standard CMake version (`4.2.0`) on the system.
+*   **Pivot to Basic Tests:** Abandoned GTest in favor of a simple C++ test executable using `assert` statements to keep moving forward.
+*   **Mocking:** Created mock storage functions (`mock_read`, `mock_write`, `mock_lseek`) to test `libconveyor` in isolation.
+*   **Test Failures & Debugging:**
+    *   The initial `test_read` and `test_read_after_write` tests failed, timing out.
+    *   This indicated a deadlock or a severe bug in the producer-consumer logic between the main thread (`conveyor_read`) and the background thread (`readWorker`).
+    *   We went through several cycles of refining the logic for `conveyor_read` and `readWorker`, focusing on the handshaking with `std::condition_variable` and the various state flags (`read_buffer_stale`, `read_worker_needs_fill`).
+    *   We added debug print statements (`std::cout`) to trace execution, which also failed to produce output initially, leading us to add `std::flush`.
+
+**Current Status:**
+*   The `test_read` test is still failing, but no longer timing out. This is progress.
+*   The current failure is `Assertion failed: bytes_read > 0 && "conveyor_read returned an error"`. This means `conveyor_read` is returning `0` when the test expects data.
+*   The latest debug output shows that `conveyor_read: Called.` is printed, but no output from `ReadWorker` is visible during the `test_read` run. The `ReadWorker` print is only visible during `test_create_destroy`. This is a huge clue.
+
+**The Crucial Clue Explained:**
+The fact that "ReadWorker: Top of loop." is not printed during `test_read` (but is printed during `test_create_destroy`'s `conveyor_create` call) means that the `readWorker` thread starts, but then either immediately blocks before its first debug print, or the thread itself is not correctly scheduled to execute its loop during the `test_read` phase. This strongly suggests a problem with the `readWorker`'s initial wait condition or its interaction with `conveyor_read`'s initial requests.

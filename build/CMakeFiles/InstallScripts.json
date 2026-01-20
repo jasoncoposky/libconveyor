@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/jason/playground/lib/libconveyor/build/cmake_install.cmake",
+		"C:/Users/jason/playground/lib/libconveyor/build/external/googletest/cmake_install.cmake",
+		"C:/Users/jason/playground/lib/libconveyor/build/external/googletest/googlemock/cmake_install.cmake",
+		"C:/Users/jason/playground/lib/libconveyor/build/external/googletest/googletest/cmake_install.cmake",
+		"C:/Users/jason/playground/lib/libconveyor/build/test/cmake_install.cmake",
+		"C:/Users/jason/playground/lib/libconveyor/build/benchmark/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="libconveyor_logo.jpg" alt="libconveyor Logo" width="500"/>
+  <img src="assets/libconveyor_logo.jpg" alt="libconveyor Logo" width="500"/>
 </p>
 
 # libconveyor: High-Performance I/O Buffering Library

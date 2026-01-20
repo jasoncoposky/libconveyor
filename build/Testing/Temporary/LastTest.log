@@ -1,0 +1,209 @@
+Start testing: Jan 20 10:43 Eastern Standard Time
+----------------------------------------------------------
+1/8 Testing: ConveyorBasicTest
+1/8 Test: ConveyorBasicTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/conveyor_basic_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ConveyorBasicTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+All tests passed!
+<end of output>
+Test time =  32.61 sec
+----------------------------------------------------------
+Test Passed.
+"ConveyorBasicTest" end time: Jan 20 10:43 Eastern Standard Time
+"ConveyorBasicTest" time elapsed: 00:00:32
+----------------------------------------------------------
+
+2/8 Testing: ModernApiTest
+2/8 Test: ModernApiTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/modern_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ModernApiTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ModernApiTest
+[ RUN      ] ModernApiTest.VectorWriteAndRead
+[       OK ] ModernApiTest.VectorWriteAndRead (2 ms)
+[----------] 1 test from ModernApiTest (2 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (2 ms total)
+[  PASSED  ] 1 test.
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"ModernApiTest" end time: Jan 20 10:43 Eastern Standard Time
+"ModernApiTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/8 Testing: AdaptiveTest
+3/8 Test: AdaptiveTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/adaptive_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"AdaptiveTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from AdaptiveTest
+[ RUN      ] AdaptiveTest.WriteTriggeredGrowth
+[       OK ] AdaptiveTest.WriteTriggeredGrowth (1 ms)
+[ RUN      ] AdaptiveTest.ResizeWhileWrapped
+[       OK ] AdaptiveTest.ResizeWhileWrapped (1620 ms)
+[ RUN      ] AdaptiveTest.ReadSequentialGrowth
+[       OK ] AdaptiveTest.ReadSequentialGrowth (0 ms)
+[----------] 3 tests from AdaptiveTest (1622 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (1622 ms total)
+[  PASSED  ] 3 tests.
+<end of output>
+Test time =   1.69 sec
+----------------------------------------------------------
+Test Passed.
+"AdaptiveTest" end time: Jan 20 10:43 Eastern Standard Time
+"AdaptiveTest" time elapsed: 00:00:01
+----------------------------------------------------------
+
+4/8 Testing: ConveyorMultiThreadTest
+4/8 Test: ConveyorMultiThreadTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/conveyor_multi_thread_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ConveyorMultiThreadTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ConveyorMultiThreadTest
+[ RUN      ] ConveyorMultiThreadTest.ConcurrentReadWrite
+[       OK ] ConveyorMultiThreadTest.ConcurrentReadWrite (5748 ms)
+[----------] 1 test from ConveyorMultiThreadTest (5748 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (5749 ms total)
+[  PASSED  ] 1 test.
+<end of output>
+Test time =   5.80 sec
+----------------------------------------------------------
+Test Passed.
+"ConveyorMultiThreadTest" end time: Jan 20 10:43 Eastern Standard Time
+"ConveyorMultiThreadTest" time elapsed: 00:00:05
+----------------------------------------------------------
+
+5/8 Testing: ConveyorConsistencyTest
+5/8 Test: ConveyorConsistencyTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/conveyor_consistency_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ConveyorConsistencyTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ConveyorConsistencyTest
+[ RUN      ] ConveyorConsistencyTest.SequentialReadRecovery
+[       OK ] ConveyorConsistencyTest.SequentialReadRecovery (1 ms)
+[----------] 1 test from ConveyorConsistencyTest (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (1 ms total)
+[  PASSED  ] 1 test.
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"ConveyorConsistencyTest" end time: Jan 20 10:43 Eastern Standard Time
+"ConveyorConsistencyTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/8 Testing: ConveyorPartialIOTest
+6/8 Test: ConveyorPartialIOTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/conveyor_partial_io_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ConveyorPartialIOTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from ConveyorPartialIOTest
+[ RUN      ] ConveyorPartialIOTest.PartialWrite
+[       OK ] ConveyorPartialIOTest.PartialWrite (1 ms)
+[ RUN      ] ConveyorPartialIOTest.PartialRead
+[       OK ] ConveyorPartialIOTest.PartialRead (0 ms)
+[----------] 2 tests from ConveyorPartialIOTest (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 2 tests.
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"ConveyorPartialIOTest" end time: Jan 20 10:43 Eastern Standard Time
+"ConveyorPartialIOTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/8 Testing: ConveyorIllegalOpTest
+7/8 Test: ConveyorIllegalOpTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/conveyor_illegal_op_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ConveyorIllegalOpTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from ConveyorIllegalOpTest
+[ RUN      ] ConveyorIllegalOpTest.WriteOnReadOnly
+[       OK ] ConveyorIllegalOpTest.WriteOnReadOnly (1 ms)
+[ RUN      ] ConveyorIllegalOpTest.ReadOnWriteOnly
+[       OK ] ConveyorIllegalOpTest.ReadOnWriteOnly (0 ms)
+[----------] 2 tests from ConveyorIllegalOpTest (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 2 tests.
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"ConveyorIllegalOpTest" end time: Jan 20 10:43 Eastern Standard Time
+"ConveyorIllegalOpTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/8 Testing: ConveyorMultiInstanceTest
+8/8 Test: ConveyorMultiInstanceTest
+Command: "C:/Users/jason/playground/lib/libconveyor/build/test/Release/conveyor_multi_instance_test.exe"
+Directory: C:/Users/jason/playground/lib/libconveyor/build/test
+"ConveyorMultiInstanceTest" start time: Jan 20 10:43 Eastern Standard Time
+Output:
+----------------------------------------------------------
+Running main() from C:\Users\jason\playground\lib\libconveyor\external\googletest\googletest\src\gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ConveyorMultiInstanceTest
+[ RUN      ] ConveyorMultiInstanceTest.OverlappingWrites
+[       OK ] ConveyorMultiInstanceTest.OverlappingWrites (1 ms)
+[----------] 1 test from ConveyorMultiInstanceTest (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (2 ms total)
+[  PASSED  ] 1 test.
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"ConveyorMultiInstanceTest" end time: Jan 20 10:43 Eastern Standard Time
+"ConveyorMultiInstanceTest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jan 20 10:43 Eastern Standard Time
