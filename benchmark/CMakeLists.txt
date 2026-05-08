@@ -19,3 +19,13 @@ target_link_libraries(conveyor_read_benchmark PRIVATE
 target_include_directories(conveyor_read_benchmark PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
+
+add_executable(conveyor_mixed_benchmark conveyor_mixed_benchmark.cpp)
+
+target_link_libraries(conveyor_mixed_benchmark PRIVATE
+    conveyor
+)
+
+target_include_directories(conveyor_mixed_benchmark PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
