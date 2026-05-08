@@ -191,7 +191,7 @@ struct ConveyorImpl {
       if (read_buffer.available_space() > 0 && !read_worker_stop_flag.load()) {
         uint64_t my_gen = read_buffer_generation.load();
 
-        off_t read_pos = current_file_offset + read_buffer.available_data();
+        off_t read_pos = read_head_in_storage.load();
 
         // --- CRITICAL: Read full available space (which might have grown!) ---
         size_t n = read_buffer.available_space();
@@ -218,6 +218,7 @@ struct ConveyorImpl {
 
         if (bytes_read > 0) {
           read_buffer.write(temp_buffer.data(), bytes_read);
+          read_head_in_storage += bytes_read;
         } else if (bytes_read == 0) {
           read_eof_flag = true;
         } else if (stats.last_error_code.load() == 0) {
@@ -269,6 +270,7 @@ conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
       }
       impl->logical_write_offset = sz;
       impl->current_file_offset = sz;
+      impl->read_head_in_storage = sz;
     }
     impl->write_worker_thread =
         std::thread(&libconveyor::ConveyorImpl::writeWorker, impl);

@@ -109,6 +109,8 @@ public:
     return Conveyor(raw);
   }
 
+  conveyor_t* impl_for_c_api() { return impl_.get(); }
+
   // --- Modern Write API ---
   // Accepts std::vector, std::string, std::array, etc.
   template <typename Container,
