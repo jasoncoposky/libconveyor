@@ -1,0 +1,2 @@
+/usr/bin/ar qc libconveyor.a CMakeFiles/conveyor.dir/src/conveyor.cpp.o CMakeFiles/conveyor.dir/src/ThreadPool.cpp.o
+/usr/bin/ranlib libconveyor.a

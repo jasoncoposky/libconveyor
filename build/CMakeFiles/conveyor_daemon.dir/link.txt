@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/conveyor_daemon.dir/src/conveyor_daemon.cpp.o -o conveyor_daemon  libconveyor.a -lrt -lpthread 

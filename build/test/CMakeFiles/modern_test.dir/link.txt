@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/modern_test.dir/modern_test.cpp.o -o modern_test  ../libconveyor.a ../lib/libgtest.a ../lib/libgmock.a ../lib/libgtest_main.a ../lib/libgtest.a 

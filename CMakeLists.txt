@@ -4,12 +4,21 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(CMakePackageConfigHelpers)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(FetchContent)
+FetchContent_Declare(
+  citor
+  GIT_REPOSITORY https://github.com/Lallapallooza/citor.git
+  GIT_TAG        main
+)
+FetchContent_MakeAvailable(citor)
 
 # Define the library
 add_library(conveyor STATIC
     src/conveyor.cpp
+    src/ThreadPool.cpp
 )
 set_target_properties(conveyor PROPERTIES CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -17,6 +26,9 @@ set_target_properties(conveyor PROPERTIES CMAKE_POSITION_INDEPENDENT_CODE ON)
 target_include_directories(conveyor PUBLIC
     $<INSTALL_INTERFACE:include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../L3KV/lib/concurrentqueue>
+    $<BUILD_INTERFACE:${citor_SOURCE_DIR}/single_include>
+    $<BUILD_INTERFACE:${citor_SOURCE_DIR}/include>
 )
 
 # --- Exports ---

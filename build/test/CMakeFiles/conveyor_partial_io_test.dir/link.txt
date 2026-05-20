@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/conveyor_partial_io_test.dir/conveyor_partial_io_test.cpp.o -o conveyor_partial_io_test  ../libconveyor.a ../lib/libgtest.a ../lib/libgmock.a ../lib/libgtest_main.a ../lib/libgtest.a 
