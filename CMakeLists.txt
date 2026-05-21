@@ -15,6 +15,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(citor)
 
+FetchContent_Declare(
+  concurrentqueue
+  GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
+  GIT_TAG        master
+)
+FetchContent_MakeAvailable(concurrentqueue)
+
 # Define the library
 add_library(conveyor STATIC
     src/conveyor.cpp
@@ -26,7 +33,7 @@ set_target_properties(conveyor PROPERTIES CMAKE_POSITION_INDEPENDENT_CODE ON)
 target_include_directories(conveyor PUBLIC
     $<INSTALL_INTERFACE:include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../L3KV/lib/concurrentqueue>
+    $<BUILD_INTERFACE:${concurrentqueue_SOURCE_DIR}>
     $<BUILD_INTERFACE:${citor_SOURCE_DIR}/single_include>
     $<BUILD_INTERFACE:${citor_SOURCE_DIR}/include>
 )
