@@ -325,20 +325,18 @@ ssize_t conveyor_write(conveyor_t *conv, const void *buf, size_t count) {
   std::unique_lock<std::mutex> lock(impl->write_mutex);
   if (impl->write_ring_buffer.available_space() < count) {
     if (impl->write_ring_buffer.capacity < impl->max_write_capacity) {
-      if (!impl->is_idle()) { // Check if queue is not empty
-        impl->write_buffer_needs_flush = true;
-        impl->triggerWriteTask();
-        impl->write_cv_producer.wait(lock, [&] { return impl->is_idle() || impl->write_worker_stop_flag; });
-      }
-      impl->write_buffer_needs_flush = false;
-      size_t needed = impl->write_ring_buffer.size + count;
-      size_t new_cap = std::min(impl->max_write_capacity, std::max(needed, impl->write_ring_buffer.capacity * 2));
-      if (new_cap >= needed) impl->write_ring_buffer.resize(new_cap);
+        size_t needed = impl->write_ring_buffer.size + count;
+        size_t new_cap = std::min(impl->max_write_capacity, std::max(needed, impl->write_ring_buffer.capacity * 2));
+        if (new_cap >= needed) impl->write_ring_buffer.resize(new_cap);
     }
   }
-  if (!impl->write_cv_producer.wait_for(lock, std::chrono::seconds(30), [&] {
-        return (impl->write_ring_buffer.available_space() >= count) || impl->write_worker_stop_flag;
-      })) { errno = ETIMEDOUT; return LIBCONVEYOR_ERROR; }
+
+  if (impl->write_ring_buffer.available_space() < count) {
+      impl->triggerWriteTask();
+      if (!impl->write_cv_producer.wait_for(lock, std::chrono::seconds(30), [&] {
+            return (impl->write_ring_buffer.available_space() >= count) || impl->write_worker_stop_flag;
+          })) { errno = ETIMEDOUT; return LIBCONVEYOR_ERROR; }
+  }
 
   if (impl->write_worker_stop_flag) return LIBCONVEYOR_ERROR;
   size_t ring_pos_start = impl->write_ring_buffer.head;
