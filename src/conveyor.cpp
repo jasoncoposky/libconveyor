@@ -136,13 +136,14 @@ struct ConveyorImpl {
               // This amortizes high backend latency.
               if (!coalesced_reqs.empty() && coalesced_reqs.back().length < (write_chunk_size / 2)) {
                   bool found = false;
-                  for (int spin = 0; spin < 5000; ++spin) {
+                  for (int spin = 0; spin < 1000; ++spin) {
                       if (write_queue.try_dequeue(req)) {
                           found = true; break;
                       }
-                      std::this_thread::yield();
+                      // CPU Pause
+                      for (volatile int i = 0; i < 100; ++i); 
                   }
-                  if (found) continue; // Found more work, continue coalescing
+                  if (found) continue; 
               }
               break; // No more work after spin, or already have enough
           }
