@@ -49,33 +49,33 @@ struct ConveyorImpl {
   std::condition_variable write_cv_producer;
   std::atomic<bool> write_task_running{false};
   std::atomic<bool> write_worker_stop_flag{false};
-  std::atomic<bool> write_buffer_needs_flush{false};
+  bool write_buffer_needs_flush = false;
+
+  std::atomic<off_t> current_file_offset{0};
+  std::atomic<off_t> logical_write_offset{0}; // For O_APPEND
 
   // Read Logic
   bool read_buffer_enabled = false;
   RingBuffer read_buffer;
-  std::mutex read_mutex; // Protects read_buffer and serializes storage I/O
+  std::mutex read_mutex;
   std::condition_variable read_cv_consumer;
   std::atomic<bool> read_task_running{false};
   std::atomic<bool> read_worker_stop_flag{false};
   std::atomic<bool> read_worker_needs_fill{false};
   std::atomic<bool> read_eof_flag{false};
-
-  std::atomic<uint64_t> read_buffer_generation{0};
-
-  std::atomic<off_t> logical_write_offset{0};
   std::atomic<off_t> read_head_in_storage{0};
-  std::atomic<off_t> current_file_offset{0};
+  std::atomic<uint64_t> read_buffer_generation{0};
+  
+  off_t last_read_end_offset = -1;
+  int sequential_read_counter = 0;
 
-  off_t last_read_end_offset = 0;
-  size_t sequential_read_counter = 0;
-
-  struct Stats {
+  // Stats
+  struct {
     std::atomic<size_t> bytes_written{0};
     std::atomic<size_t> bytes_read{0};
     std::atomic<size_t> total_write_latency_us{0};
-    std::atomic<size_t> write_ops_count{0};
     std::atomic<size_t> total_read_latency_us{0};
+    std::atomic<size_t> write_ops_count{0};
     std::atomic<size_t> read_ops_count{0};
     std::atomic<size_t> write_buffer_full_events{0};
     std::atomic<int> last_error_code{0};
@@ -105,9 +105,13 @@ struct ConveyorImpl {
       });
   }
 
+  bool is_idle() {
+      return write_queue.size_approx() == 0;
+  }
+
   void writeWorkerTask() {
-    std::vector<char> scratch_buffer;
-    scratch_buffer.reserve(write_chunk_size); 
+    size_t scratch_capacity = write_chunk_size;
+    auto scratch_buffer = std::make_unique<char[]>(scratch_capacity);
 
     while (true) {
       std::vector<WriteRequest> coalesced_reqs;
@@ -132,20 +136,17 @@ struct ConveyorImpl {
               }
               if (coalesced_reqs.back().length >= write_chunk_size) break;
           } else {
-              // Queue empty. If we have very little work, spin briefly to see if more arrives.
-              // This amortizes high backend latency.
               if (!coalesced_reqs.empty() && coalesced_reqs.back().length < (write_chunk_size / 2)) {
                   bool found = false;
                   for (int spin = 0; spin < 1000; ++spin) {
                       if (write_queue.try_dequeue(req)) {
                           found = true; break;
                       }
-                      // CPU Pause
                       for (volatile int i = 0; i < 100; ++i); 
                   }
                   if (found) continue; 
               }
-              break; // No more work after spin, or already have enough
+              break; 
           }
       }
 
@@ -164,18 +165,20 @@ struct ConveyorImpl {
       for (const auto& chunk : coalesced_reqs) {
           if (write_worker_stop_flag) break;
 
-          if (scratch_buffer.capacity() < chunk.length) scratch_buffer.reserve(chunk.length);
-          scratch_buffer.resize(chunk.length);
+          if (scratch_capacity < chunk.length) {
+              scratch_capacity = chunk.length;
+              scratch_buffer = std::make_unique<char[]>(scratch_capacity);
+          }
 
           {
               std::lock_guard<std::mutex> lock(write_mutex);
-              write_ring_buffer.peek_at(chunk.ring_buffer_pos, scratch_buffer.data(), chunk.length);
+              write_ring_buffer.peek_at(chunk.ring_buffer_pos, scratch_buffer.get(), chunk.length);
           }
 
           off_t write_pos = (flags & O_APPEND) ? logical_write_offset.load() : chunk.file_offset;
           auto start = std::chrono::steady_clock::now();
           
-          ssize_t written_now = ops.pwrite(handle, scratch_buffer.data(), chunk.length, write_pos);
+          ssize_t written_now = ops.pwrite(handle, scratch_buffer.get(), chunk.length, write_pos);
           bool write_error = (written_now < (ssize_t)chunk.length);
           
           auto end = std::chrono::steady_clock::now();
@@ -204,8 +207,8 @@ struct ConveyorImpl {
   }
 
   void readWorkerTask() {
-    std::vector<char> temp_buffer;
-    temp_buffer.reserve(read_chunk_size); 
+    size_t scratch_capacity = read_chunk_size;
+    auto temp_buffer = std::make_unique<char[]>(scratch_capacity);
 
     while (true) {
       std::unique_lock<std::mutex> lock(read_mutex);
@@ -224,14 +227,15 @@ struct ConveyorImpl {
       uint64_t my_gen = read_buffer_generation.load();
       off_t read_pos = read_head_in_storage.load();
       
-      // BULK PREFETCH: Fetch as much as we can fit (up to chunk size)
       size_t n = std::min(read_chunk_size, read_buffer.available_space());
-      if (temp_buffer.capacity() < n) temp_buffer.reserve(n);
-      temp_buffer.resize(n);
+      if (scratch_capacity < n) {
+          scratch_capacity = n;
+          temp_buffer = std::make_unique<char[]>(scratch_capacity);
+      }
 
       lock.unlock();
       auto start = std::chrono::steady_clock::now();
-      ssize_t bytes_read = ops.pread(handle, temp_buffer.data(), n, read_pos);
+      ssize_t bytes_read = ops.pread(handle, temp_buffer.get(), n, read_pos);
       auto end = std::chrono::steady_clock::now();
       lock.lock();
 
@@ -241,7 +245,7 @@ struct ConveyorImpl {
       }
 
       if (bytes_read > 0) {
-        read_buffer.write(temp_buffer.data(), bytes_read);
+        read_buffer.write(temp_buffer.get(), bytes_read);
         read_head_in_storage += bytes_read;
         stats.bytes_read += bytes_read;
         stats.total_read_latency_us += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
@@ -261,14 +265,7 @@ struct ConveyorImpl {
       }
     }
   }
-
-  bool is_idle() const {
-      return write_queue.size_approx() == 0;
-  }
 };
-} // namespace libconveyor
-
-using namespace libconveyor;
 
 conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   if (!cfg) { errno = EINVAL; return nullptr; }
@@ -287,34 +284,35 @@ conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   impl->write_buffer_enabled = (mode == O_WRONLY || mode == O_RDWR) && (cfg->initial_write_size > 0);
 
   if (impl->read_buffer_enabled) impl->triggerReadTask();
-  if (impl->write_buffer_enabled) {
-    if (impl->flags & O_APPEND) {
-      off_t sz = impl->ops.lseek(impl->handle, 0, SEEK_END);
-      if (sz == LIBCONVEYOR_ERROR) { delete impl; return nullptr; }
-      impl->logical_write_offset = sz;
-      impl->current_file_offset = sz;
-      impl->read_head_in_storage = sz;
-    }
-  }
   return reinterpret_cast<conveyor_t *>(impl);
 }
 
 void conveyor_destroy(conveyor_t *conv) {
   if (!conv) return;
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  if (impl->write_buffer_enabled) conveyor_flush(conv);
-  
-  impl->read_worker_stop_flag = true;
-  impl->write_worker_stop_flag = true;
-
-  while (impl->read_task_running.load() || impl->write_task_running.load()) {
-      std::this_thread::yield();
-  }
-
+  conveyor_stop(conv);
   delete impl;
 }
 
-ssize_t conveyor_write(conveyor_t *conv, const void *buf, size_t count) {
+void conveyor_stop(conveyor_t *conv) {
+  if (!conv) return;
+  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+  
+  if (impl->write_buffer_enabled) {
+      std::unique_lock<std::mutex> lock(impl->write_mutex);
+      impl->write_worker_stop_flag = true;
+      impl->triggerWriteTask();
+      impl->write_cv_producer.wait(lock, [&] { return !impl->write_task_running || impl->is_idle(); });
+  }
+
+  if (impl->read_buffer_enabled) {
+      std::unique_lock<std::mutex> lock(impl->read_mutex);
+      impl->read_worker_stop_flag = true;
+      impl->read_cv_consumer.notify_all();
+  }
+}
+
+ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
   if (!conv) { errno = EBADF; return LIBCONVEYOR_ERROR; }
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
   int mode = impl->flags & O_ACCMODE;
@@ -381,9 +379,6 @@ ssize_t conveyor_read(conveyor_t *conv, void *buf, size_t count) {
       impl->triggerReadTask();
     }
   }
-  if (impl->write_buffer_enabled) {
-      // Snooping skipped for now
-  }
   impl->current_file_offset = start_offset + total_read;
   return total_read;
 }
@@ -398,55 +393,43 @@ off_t conveyor_lseek(conveyor_t *conv, off_t offset, int whence) {
     impl->current_file_offset = new_offset;
     impl->read_head_in_storage = new_offset;
     impl->read_buffer.clear();
-    impl->read_buffer_generation++;
     impl->read_eof_flag = false;
-    impl->read_worker_needs_fill = true;
+    impl->read_buffer_generation++;
     impl->triggerReadTask();
   }
-  return impl->current_file_offset.load();
+  return new_offset;
 }
 
 int conveyor_flush(conveyor_t *conv) {
-  if (!conv) { errno = EBADF; return -1; }
+  if (!conv) { errno = EBADF; return LIBCONVEYOR_ERROR; }
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
   if (!impl->write_buffer_enabled) return 0;
   std::unique_lock<std::mutex> lock(impl->write_mutex);
   impl->write_buffer_needs_flush = true;
   impl->triggerWriteTask();
-  impl->write_cv_producer.wait(lock, [&] { return impl->is_idle() || impl->write_worker_stop_flag; });
-  return (impl->stats.last_error_code.load() == 0) ? 0 : -1;
+  if (!impl->write_cv_producer.wait_for(lock, std::chrono::seconds(30), [&] { return impl->is_idle() || impl->write_worker_stop_flag; })) { return LIBCONVEYOR_ERROR; }
+  return (impl->stats.last_error_code.load() == 0) ? 0 : LIBCONVEYOR_ERROR;
 }
 
-int conveyor_is_idle(conveyor_t *conv) {
-  if (!conv) return 1;
+int conveyor_get_stats(conveyor_t *conv, conveyor_stats_t *stats) {
+  if (!conv || !stats) { errno = EINVAL; return LIBCONVEYOR_ERROR; }
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  return impl->is_idle() ? 1 : 0;
-}
-
-int conveyor_get_stats(conveyor_t* conv, conveyor_stats_t* stats) {
-  if (!conv || !stats) return -1;
-  auto* impl = reinterpret_cast<ConveyorImpl*>(conv);
   stats->bytes_written = impl->stats.bytes_written.exchange(0);
   stats->bytes_read = impl->stats.bytes_read.exchange(0);
-  size_t w_ops = impl->stats.write_ops_count.exchange(0), w_lat = impl->stats.total_write_latency_us.exchange(0);
-  stats->avg_write_latency_ms = (w_ops > 0) ? (w_lat / w_ops) : 0;
-  size_t r_ops = impl->stats.read_ops_count.exchange(0), r_lat = impl->stats.total_read_latency_us.exchange(0);
-  stats->avg_read_latency_ms = (r_ops > 0) ? (r_lat / r_ops) : 0;
+  size_t w_ops = impl->stats.write_ops_count.exchange(0);
+  size_t r_ops = impl->stats.read_ops_count.exchange(0);
+  stats->avg_write_latency_ms = (w_ops > 0) ? (impl->stats.total_write_latency_us.exchange(0) / (w_ops * 1000)) : 0;
+  stats->avg_read_latency_ms = (r_ops > 0) ? (impl->stats.total_read_latency_us.exchange(0) / (r_ops * 1000)) : 0;
   stats->write_buffer_full_events = impl->stats.write_buffer_full_events.exchange(0);
-  stats->last_error_code = impl->stats.last_error_code.exchange(0);
+  stats->last_error_code = impl->stats.last_error_code.load();
   return 0;
-}
-
-void conveyor_stop(conveyor_t* conv) {
-    if (!conv) return;
-    auto* impl = reinterpret_cast<ConveyorImpl*>(conv);
-    impl->read_worker_stop_flag = true;
-    impl->write_worker_stop_flag = true;
 }
 
 int conveyor_clear_error(conveyor_t* conv) {
     if (!conv) return -1;
     auto* impl = reinterpret_cast<ConveyorImpl*>(conv);
-    impl->stats.last_error_code.store(0);
+    impl->stats.last_error_code = 0;
     return 0;
 }
+
+} // namespace libconveyor
