@@ -1,9 +1,0 @@
-ConveyorBasicTest 2 16.1031
-ModernApiTest 2 0.00448061
-AdaptiveTest 2 0.804407
-ConveyorMultiThreadTest 2 2.53788
-ConveyorConsistencyTest 1 0.00564412
-ConveyorPartialIOTest 2 0.00245214
-ConveyorIllegalOpTest 2 0.00233412
-ConveyorMultiInstanceTest 2 0.00222791
----

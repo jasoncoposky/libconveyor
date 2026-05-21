@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/conveyor_benchmark.dir/conveyor_benchmark.cpp.o -o conveyor_benchmark  ../libconveyor.a 

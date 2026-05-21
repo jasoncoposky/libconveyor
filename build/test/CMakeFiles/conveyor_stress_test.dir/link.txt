@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/conveyor_stress_test.dir/conveyor_stress_test.cpp.o -o conveyor_stress_test  ../libconveyor.a ../lib/libgtest.a ../lib/libgmock.a ../lib/libgtest_main.a ../lib/libgtest.a 

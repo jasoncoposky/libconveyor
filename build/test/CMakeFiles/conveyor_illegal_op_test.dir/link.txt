@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/conveyor_illegal_op_test.dir/conveyor_illegal_op_test.cpp.o -o conveyor_illegal_op_test  ../libconveyor.a ../lib/libgtest.a ../lib/libgmock.a ../lib/libgtest_main.a ../lib/libgtest.a 

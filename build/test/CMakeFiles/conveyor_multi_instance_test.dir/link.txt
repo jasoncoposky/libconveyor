@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/conveyor_multi_instance_test.dir/conveyor_multi_instance_test.cpp.o -o conveyor_multi_instance_test  ../libconveyor.a ../lib/libgtest.a ../lib/libgmock.a ../lib/libgtest_main.a ../lib/libgtest.a 
