@@ -66,6 +66,10 @@ typedef struct {
     size_t initial_read_size;
     size_t max_write_size;
     size_t max_read_size;
+
+    // --- Performance Tuning ---
+    size_t write_chunk_size; // Max bytes to coalesce in a single pwrite
+    size_t read_chunk_size;  // Max bytes to prefetch in a single pread
 } conveyor_config_t;
 
 // Creates a conveyor instance with the specified configuration

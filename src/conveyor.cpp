@@ -37,6 +37,9 @@ struct ConveyorImpl {
   size_t max_write_capacity = 0;
   size_t max_read_capacity = 0;
 
+  size_t write_chunk_size = 4 * 1024 * 1024; // Defaults
+  size_t read_chunk_size = 4 * 1024 * 1024;
+
   // Write Logic
   bool write_buffer_enabled = false;
   RingBuffer write_ring_buffer;
@@ -104,36 +107,29 @@ struct ConveyorImpl {
 
   void writeWorkerTask() {
     std::vector<char> scratch_buffer;
-    scratch_buffer.reserve(1024 * 1024 * 4); // 4MB scratch
+    scratch_buffer.reserve(write_chunk_size); 
 
     while (true) {
       std::vector<WriteRequest> coalesced_reqs;
       WriteRequest req;
       
       // --- COALESCING ENGINE ---
-      // Try to grab a batch of contiguous work
       while (write_queue.try_dequeue(req)) {
           if (coalesced_reqs.empty()) {
               coalesced_reqs.push_back(req);
           } else {
               const auto& last = coalesced_reqs.back();
-              // Contiguous check: offset matches and ring buffer is linear
               bool offset_match = (req.file_offset == (off_t)(last.file_offset + last.length));
               bool ring_linear = (req.ring_buffer_pos == (last.ring_buffer_pos + last.length));
               
               if (offset_match && ring_linear && (coalesced_reqs.size() < 64)) {
                   coalesced_reqs.back().length += req.length;
               } else {
-                  // Not contiguous or too many, push back to process later? 
-                  // No, ConcurrentQueue doesn't support push_front. 
-                  // We'll just stop coalescing here and process this one in the NEXT batch.
-                  // Wait, if I dequeue it, I MUST process it. 
-                  // Let's keep a list of non-contiguous ones in this task.
                   coalesced_reqs.push_back(req);
-                  break; // For now, let's just do one "run" of contiguous
+                  break; 
               }
           }
-          if (coalesced_reqs.back().length >= 4 * 1024 * 1024) break; // 4MB cap per pwrite
+          if (coalesced_reqs.back().length >= write_chunk_size) break; 
       }
 
       if (coalesced_reqs.empty()) {
@@ -192,7 +188,7 @@ struct ConveyorImpl {
 
   void readWorkerTask() {
     std::vector<char> temp_buffer;
-    temp_buffer.reserve(1024 * 1024 * 4); // 4MB prefetch buffer
+    temp_buffer.reserve(read_chunk_size); 
 
     while (true) {
       std::unique_lock<std::mutex> lock(read_mutex);
@@ -211,8 +207,8 @@ struct ConveyorImpl {
       uint64_t my_gen = read_buffer_generation.load();
       off_t read_pos = read_head_in_storage.load();
       
-      // BULK PREFETCH: Fetch as much as we can fit (up to 4MB)
-      size_t n = std::min((size_t)(4 * 1024 * 1024), read_buffer.available_space());
+      // BULK PREFETCH: Fetch as much as we can fit (up to chunk size)
+      size_t n = std::min(read_chunk_size, read_buffer.available_space());
       if (temp_buffer.capacity() < n) temp_buffer.reserve(n);
       temp_buffer.resize(n);
 
@@ -265,6 +261,9 @@ conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   impl->ops = cfg->ops;
   impl->max_write_capacity = (cfg->max_write_size > 0) ? cfg->max_write_size : cfg->initial_write_size;
   impl->max_read_capacity = (cfg->max_read_size > 0) ? cfg->max_read_size : cfg->initial_read_size;
+
+  if (cfg->write_chunk_size > 0) impl->write_chunk_size = cfg->write_chunk_size;
+  if (cfg->read_chunk_size > 0) impl->read_chunk_size = cfg->read_chunk_size;
 
   int mode = cfg->flags & O_ACCMODE;
   impl->read_buffer_enabled = (mode == O_RDONLY || mode == O_RDWR) && (cfg->initial_read_size > 0);
