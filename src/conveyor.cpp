@@ -104,35 +104,82 @@ struct ConveyorImpl {
 
   void writeWorkerTask() {
     std::vector<char> scratch_buffer;
-    scratch_buffer.reserve(4096);
+    scratch_buffer.reserve(1024 * 1024 * 4); // 4MB scratch
 
     while (true) {
+      std::vector<WriteRequest> coalesced_reqs;
       WriteRequest req;
-      bool has_work = write_queue.try_dequeue(req);
-
-      if (!has_work) {
-          // Busy spin briefly to avoid re-trigger overhead
-          for (int spin = 0; spin < 2000; ++spin) {
-              if (write_queue.try_dequeue(req)) {
-                  has_work = true;
-                  break;
+      
+      // --- COALESCING ENGINE ---
+      // Try to grab a batch of contiguous work
+      while (write_queue.try_dequeue(req)) {
+          if (coalesced_reqs.empty()) {
+              coalesced_reqs.push_back(req);
+          } else {
+              const auto& last = coalesced_reqs.back();
+              // Contiguous check: offset matches and ring buffer is linear
+              bool offset_match = (req.file_offset == (off_t)(last.file_offset + last.length));
+              bool ring_linear = (req.ring_buffer_pos == (last.ring_buffer_pos + last.length));
+              
+              if (offset_match && ring_linear && (coalesced_reqs.size() < 64)) {
+                  coalesced_reqs.back().length += req.length;
+              } else {
+                  // Not contiguous or too many, push back to process later? 
+                  // No, ConcurrentQueue doesn't support push_front. 
+                  // We'll just stop coalescing here and process this one in the NEXT batch.
+                  // Wait, if I dequeue it, I MUST process it. 
+                  // Let's keep a list of non-contiguous ones in this task.
+                  coalesced_reqs.push_back(req);
+                  break; // For now, let's just do one "run" of contiguous
               }
-              std::this_thread::yield();
+          }
+          if (coalesced_reqs.back().length >= 4 * 1024 * 1024) break; // 4MB cap per pwrite
+      }
+
+      if (coalesced_reqs.empty()) {
+          std::unique_lock<std::mutex> lock(write_mutex);
+          write_buffer_needs_flush = false;
+          write_cv_producer.notify_all();
+          
+          write_task_running = false;
+          if (write_queue.size_approx() > 0) {
+              if (!write_task_running.exchange(true)) continue;
+          }
+          break;
+      }
+
+      for (const auto& chunk : coalesced_reqs) {
+          if (write_worker_stop_flag) break;
+
+          if (scratch_buffer.capacity() < chunk.length) scratch_buffer.reserve(chunk.length);
+          scratch_buffer.resize(chunk.length);
+
+          {
+              std::lock_guard<std::mutex> lock(write_mutex);
+              write_ring_buffer.peek_at(chunk.ring_buffer_pos, scratch_buffer.data(), chunk.length);
           }
 
-          if (!has_work) {
-              std::unique_lock<std::mutex> lock(write_mutex);
-              write_buffer_needs_flush = false;
+          off_t write_pos = (flags & O_APPEND) ? logical_write_offset.load() : chunk.file_offset;
+          auto start = std::chrono::steady_clock::now();
+          
+          ssize_t written_now = ops.pwrite(handle, scratch_buffer.data(), chunk.length, write_pos);
+          bool write_error = (written_now < (ssize_t)chunk.length);
+          
+          auto end = std::chrono::steady_clock::now();
+
+          {
+              std::lock_guard<std::mutex> lock(write_mutex);
+              write_ring_buffer.read(nullptr, chunk.length);
               write_cv_producer.notify_all();
-              
-              write_task_running = false;
-              if (write_queue.try_dequeue(req)) {
-                  if (!write_task_running.exchange(true)) {
-                      // Claimed work, continue loop
-                  } else { break; }
-              } else {
-                  break; 
-              }
+          }
+
+          if (!write_error) {
+            stats.bytes_written += chunk.length;
+            stats.total_write_latency_us += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+            stats.write_ops_count++;
+            if (flags & O_APPEND) logical_write_offset += chunk.length;
+          } else if (stats.last_error_code.load() == 0) {
+            stats.last_error_code = (written_now < 0) ? errno : EIO;
           }
       }
 
@@ -140,47 +187,13 @@ struct ConveyorImpl {
         write_task_running = false;
         break;
       }
-
-      if (scratch_buffer.capacity() < req.length) scratch_buffer.reserve(req.length);
-      scratch_buffer.resize(req.length);
-
-      {
-          std::lock_guard<std::mutex> lock(write_mutex);
-          write_ring_buffer.peek_at(req.ring_buffer_pos, scratch_buffer.data(), req.length);
-      }
-
-      off_t write_pos = (flags & O_APPEND) ? logical_write_offset.load() : req.file_offset;
-      auto start = std::chrono::steady_clock::now();
-      size_t total_written = 0;
-      bool write_error = false;
-      while (total_written < req.length) {
-        ssize_t written_now = ops.pwrite(handle, scratch_buffer.data() + total_written, req.length - total_written, write_pos + total_written);
-        if (written_now <= 0) {
-          if (stats.last_error_code.load() == 0) stats.last_error_code = (written_now < 0) ? errno : EIO;
-          write_error = true;
-          break;
-        }
-        total_written += written_now;
-      }
-      auto end = std::chrono::steady_clock::now();
-
-      {
-          std::lock_guard<std::mutex> lock(write_mutex);
-          write_ring_buffer.read(nullptr, req.length);
-          write_cv_producer.notify_all();
-      }
-
-      if (!write_error) {
-        stats.bytes_written += total_written;
-        stats.total_write_latency_us += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-        stats.write_ops_count++;
-        if (flags & O_APPEND) logical_write_offset += total_written;
-      }
     }
   }
 
   void readWorkerTask() {
     std::vector<char> temp_buffer;
+    temp_buffer.reserve(1024 * 1024 * 4); // 4MB prefetch buffer
+
     while (true) {
       std::unique_lock<std::mutex> lock(read_mutex);
       
@@ -197,7 +210,9 @@ struct ConveyorImpl {
 
       uint64_t my_gen = read_buffer_generation.load();
       off_t read_pos = read_head_in_storage.load();
-      size_t n = read_buffer.available_space();
+      
+      // BULK PREFETCH: Fetch as much as we can fit (up to 4MB)
+      size_t n = std::min((size_t)(4 * 1024 * 1024), read_buffer.available_space());
       if (temp_buffer.capacity() < n) temp_buffer.reserve(n);
       temp_buffer.resize(n);
 
