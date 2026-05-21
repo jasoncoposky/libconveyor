@@ -114,22 +114,38 @@ struct ConveyorImpl {
       WriteRequest req;
       
       // --- COALESCING ENGINE ---
-      while (write_queue.try_dequeue(req)) {
-          if (coalesced_reqs.empty()) {
-              coalesced_reqs.push_back(req);
-          } else {
-              const auto& last = coalesced_reqs.back();
-              bool offset_match = (req.file_offset == (off_t)(last.file_offset + last.length));
-              bool ring_linear = (req.ring_buffer_pos == (last.ring_buffer_pos + last.length));
-              
-              if (offset_match && ring_linear && (coalesced_reqs.size() < 64)) {
-                  coalesced_reqs.back().length += req.length;
-              } else {
+      while (true) {
+          if (write_queue.try_dequeue(req)) {
+              if (coalesced_reqs.empty()) {
                   coalesced_reqs.push_back(req);
-                  break; 
+              } else {
+                  const auto& last = coalesced_reqs.back();
+                  bool offset_match = (req.file_offset == (off_t)(last.file_offset + last.length));
+                  bool ring_linear = (req.ring_buffer_pos == (last.ring_buffer_pos + last.length));
+                  
+                  if (offset_match && ring_linear && (coalesced_reqs.size() < 1024)) {
+                      coalesced_reqs.back().length += req.length;
+                  } else {
+                      coalesced_reqs.push_back(req);
+                      break; 
+                  }
               }
+              if (coalesced_reqs.back().length >= write_chunk_size) break;
+          } else {
+              // Queue empty. If we have very little work, spin briefly to see if more arrives.
+              // This amortizes high backend latency.
+              if (!coalesced_reqs.empty() && coalesced_reqs.back().length < (write_chunk_size / 2)) {
+                  bool found = false;
+                  for (int spin = 0; spin < 5000; ++spin) {
+                      if (write_queue.try_dequeue(req)) {
+                          found = true; break;
+                      }
+                      std::this_thread::yield();
+                  }
+                  if (found) continue; // Found more work, continue coalescing
+              }
+              break; // No more work after spin, or already have enough
           }
-          if (coalesced_reqs.back().length >= write_chunk_size) break; 
       }
 
       if (coalesced_reqs.empty()) {
