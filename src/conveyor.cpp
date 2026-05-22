@@ -23,7 +23,7 @@ namespace libconveyor {
 struct WriteRequest {
   off_t file_offset;
   size_t length;
-  void* data; // Raw pointer for speed
+  void* data; 
 };
 
 struct ConveyorImpl {
@@ -36,10 +36,10 @@ struct ConveyorImpl {
   moodycamel::ConcurrentQueue<void*> free_write_pool;
   moodycamel::ConcurrentQueue<WriteRequest> write_queue;
   
-  std::mutex rotation_mutex;
   void* active_seg = nullptr;
   size_t active_cursor = 0;
   off_t active_file_start = 0;
+  std::mutex rotation_mutex;
 
   std::atomic<bool> write_worker_stop_flag{false};
   std::atomic<int> active_write_tasks{0};
@@ -56,8 +56,6 @@ struct ConveyorImpl {
   struct {
     std::atomic<size_t> bytes_written{0};
     std::atomic<size_t> bytes_read{0};
-    std::atomic<size_t> write_ops_count{0};
-    std::atomic<size_t> read_ops_count{0};
     std::atomic<int> last_error_code{0};
   } stats;
 
@@ -79,8 +77,8 @@ struct ConveyorImpl {
   }
 
   void triggerWriteTask() {
-      if (active_write_tasks.load(std::memory_order_relaxed) > 8) return; 
-      if (active_write_tasks.fetch_add(1) <= 8) {
+      if (active_write_tasks.load(std::memory_order_relaxed) > 16) return; 
+      if (active_write_tasks.fetch_add(1) <= 16) {
           ThreadPool::instance().submit_detached([this]() {
               this->writeWorkerTask();
               active_write_tasks.fetch_sub(1);
@@ -91,18 +89,10 @@ struct ConveyorImpl {
   void writeWorkerTask() {
     while (true) {
       WriteRequest req;
-      if (!write_queue.try_dequeue(req)) {
-          bool found = false;
-          for (int spin = 0; spin < 500; ++spin) {
-              if (write_queue.try_dequeue(req)) { found = true; break; }
-              for (volatile int i = 0; i < 20; ++i);
-          }
-          if (!found) break;
-      }
+      if (!write_queue.try_dequeue(req)) break;
       ssize_t written = ops.pwrite(handle, req.data, req.length, req.file_offset);
       if (written == (ssize_t)req.length) {
           stats.bytes_written += written;
-          stats.write_ops_count++;
       } else { stats.last_error_code = (written < 0) ? errno : EIO; }
       free_write_pool.enqueue(req.data);
     }
@@ -150,19 +140,14 @@ conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
 void conveyor_destroy(conveyor_t *conv) {
   if (!conv) return;
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  conveyor_stop(conv);
-  delete impl;
-}
-
-void conveyor_stop(conveyor_t *conv) {
-  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  if (!impl) return;
   conveyor_flush(conv);
   impl->write_worker_stop_flag = true;
   impl->read_worker_stop_flag = true;
-  { std::lock_guard<std::mutex> lock(impl->read_mutex); impl->read_cv_consumer.notify_all(); }
   while (impl->active_write_tasks > 0) std::this_thread::yield();
+  delete impl;
 }
+
+void conveyor_stop(conveyor_t *conv) {}
 
 ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
@@ -211,12 +196,8 @@ ssize_t conveyor_read(conveyor_t *conv, void *buf, size_t count) {
 
 off_t conveyor_lseek(conveyor_t *conv, off_t offset, int whence) {
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  std::unique_lock<std::mutex> lock(impl->read_mutex);
-  off_t new_off = (whence == SEEK_SET) ? offset : (whence == SEEK_CUR) ? (off_t)impl->current_file_offset + offset : impl->ops.lseek(impl->handle, offset, SEEK_END);
-  impl->current_file_offset = new_off;
-  impl->read_head_in_storage = new_off;
-  impl->read_buffer.clear();
-  return new_off;
+  impl->current_file_offset = offset;
+  return offset;
 }
 
 int conveyor_flush(conveyor_t *conv) {
