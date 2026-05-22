@@ -85,26 +85,30 @@ struct ConveyorImpl {
     std::atomic<int> last_error_code{0};
   } stats;
 
-  ConveyorImpl(size_t w_cap, size_t r_cap)
+  ConveyorImpl(size_t w_cap, size_t r_cap, size_t w_chunk)
       : read_buffer(r_cap), max_write_capacity(w_cap),
-        max_read_capacity(r_cap) {}
+        max_read_capacity(r_cap), write_chunk_size(w_chunk) {
+      
+      // PRE-ALLOCATE SEGMENT POOL (Zero-latency foundation)
+      size_t num_segments = std::max((size_t)1, w_cap / w_chunk);
+      num_segments = std::min(num_segments, (size_t)64); // Cap at 64 segments (2GB max for 32MB chunks)
+      
+      for (size_t i = 0; i < num_segments; ++i) {
+          free_write_pool.enqueue(std::shared_ptr<char[]>(new char[w_chunk]));
+          pool_size++;
+      }
+  }
 
   std::shared_ptr<char[]> get_free_buffer() {
       std::shared_ptr<char[]> buf;
       if (free_write_pool.try_dequeue(buf)) return buf;
       
-      // Alloc new if under capacity
-      if (pool_size.load() < 64) { // Max 64 segments in pool
-          pool_size++;
-          return std::shared_ptr<char[]>(new char[write_chunk_size]);
-      }
-      
-      // Block/Spin for free buffer
-      for (int spin = 0; spin < 10000; ++spin) {
+      // Block/Spin for free buffer (Backpressure)
+      for (int spin = 0; spin < 20000; ++spin) {
           if (free_write_pool.try_dequeue(buf)) return buf;
           for (volatile int i = 0; i < 100; ++i);
       }
-      return nullptr; // Should increase pool or block harder
+      return nullptr; 
   }
 
   void triggerWriteTask() {
@@ -230,15 +234,17 @@ struct ConveyorImpl {
 
 conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   if (!cfg) { errno = EINVAL; return nullptr; }
-  auto *impl = new ConveyorImpl(cfg->initial_write_size, cfg->initial_read_size);
+  
+  size_t w_chunk = (cfg->write_chunk_size > 0) ? cfg->write_chunk_size : 4 * 1024 * 1024;
+  size_t r_chunk = (cfg->read_chunk_size > 0) ? cfg->read_chunk_size : 4 * 1024 * 1024;
+
+  auto *impl = new ConveyorImpl(cfg->initial_write_size, cfg->initial_read_size, w_chunk);
   impl->handle = cfg->handle;
   impl->flags = cfg->flags;
   impl->ops = cfg->ops;
   impl->max_write_capacity = (cfg->max_write_size > 0) ? cfg->max_write_size : cfg->initial_write_size;
   impl->max_read_capacity = (cfg->max_read_size > 0) ? cfg->max_read_size : cfg->initial_read_size;
-
-  if (cfg->write_chunk_size > 0) impl->write_chunk_size = cfg->write_chunk_size;
-  if (cfg->read_chunk_size > 0) impl->read_chunk_size = cfg->read_chunk_size;
+  impl->read_chunk_size = r_chunk;
 
   int mode = cfg->flags & O_ACCMODE;
   impl->read_buffer_enabled = (mode == O_RDONLY || mode == O_RDWR) && (cfg->initial_read_size > 0);
