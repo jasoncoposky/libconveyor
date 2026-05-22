@@ -70,12 +70,24 @@ struct ConveyorImpl {
           void* raw_ptr = nullptr;
           if (posix_memalign(&raw_ptr, 4096, w_chunk) == 0) {
               auto buf = std::shared_ptr<char[]>((char*)raw_ptr, [](char* p) { free(p); });
+              std::memset(raw_ptr, 0, w_chunk);
               free_write_pool.enqueue(buf);
           }
       }
   }
 
+  std::shared_ptr<char[]> get_free_buffer() {
+      std::shared_ptr<char[]> buf;
+      if (free_write_pool.try_dequeue(buf)) return buf;
+      for (int spin = 0; spin < 1000; ++spin) {
+          if (free_write_pool.try_dequeue(buf)) return buf;
+          for (volatile int i = 0; i < 50; ++i);
+      }
+      return nullptr; 
+  }
+
   void triggerWriteTask() {
+      if (write_worker_stop_flag.load(std::memory_order_relaxed)) return;
       if (active_write_tasks.load(std::memory_order_relaxed) > 8) return; 
       if (active_write_tasks.fetch_add(1) <= 8) {
           ThreadPool::instance().submit_detached([this]() {
@@ -83,6 +95,11 @@ struct ConveyorImpl {
               active_write_tasks.fetch_sub(1);
           });
       } else { active_write_tasks.fetch_sub(1); }
+  }
+
+  void triggerReadTask() {
+      if (read_task_running.exchange(true)) return;
+      ThreadPool::instance().submit_detached([this]() { this->readWorkerTask(); });
   }
 
   void writeWorkerTask() {
@@ -229,6 +246,7 @@ void* conveyor_get_buffer(conveyor_t* conv, size_t* size) {
     if (impl->free_write_pool.try_dequeue(seg)) {
         if (size) *size = impl->write_chunk_size;
         // production would use a real tracking map
+        auto* leak = new std::shared_ptr<char[]>(seg); // Keep alive
         return seg.get();
     }
     return nullptr;
