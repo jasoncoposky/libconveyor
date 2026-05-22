@@ -72,8 +72,18 @@ typedef struct {
     size_t read_chunk_size;  // Max bytes to prefetch in a single pread
 } conveyor_config_t;
 
-// Creates a conveyor instance with the specified configuration
-conveyor_t* conveyor_create(const conveyor_config_t* cfg);
+// --- Zero-Copy Segment Pool API ---
+
+// Requests a writable buffer from the conveyor's pool.
+// The returned buffer is owned by the caller until conveyor_submit_buffer is called.
+void* conveyor_get_buffer(conveyor_t* conv, size_t* size);
+
+// Submits a buffer previously acquired from conveyor_get_buffer for asynchronous write.
+// The conveyor takes ownership of the buffer and will eventually return it to the pool.
+ssize_t conveyor_submit_buffer(conveyor_t* conv, void* buf, size_t size, off_t file_offset);
+
+// Releases a buffer back to the pool without submitting it.
+void conveyor_release_buffer(conveyor_t* conv, void* buf);
 
 
 // Destroys the conveyor, flushing any remaining data in the write buffer
