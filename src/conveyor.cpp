@@ -113,12 +113,9 @@ struct ConveyorImpl {
           }
           if (!found) break;
       }
-      auto start = std::chrono::steady_clock::now();
       ssize_t written = ops.pwrite(handle, req.data.get(), req.length, req.file_offset);
-      auto end = std::chrono::steady_clock::now();
       if (written == (ssize_t)req.length) {
           stats.bytes_written += written;
-          stats.total_write_latency_us += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
           stats.write_ops_count++;
       } else { stats.last_error_code = (written < 0) ? errno : EIO; }
       free_write_pool.enqueue(req.data);
@@ -150,11 +147,14 @@ struct ConveyorImpl {
 conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   if (!cfg) return nullptr;
   size_t w_chunk = (cfg->write_chunk_size > 0) ? cfg->write_chunk_size : 32 * 1024 * 1024;
+  size_t r_chunk = (cfg->read_chunk_size > 0) ? cfg->read_chunk_size : 32 * 1024 * 1024;
   auto *impl = new ConveyorImpl(cfg->initial_write_size, cfg->initial_read_size, w_chunk);
   impl->handle = cfg->handle;
   impl->flags = cfg->flags;
   impl->ops = cfg->ops;
   impl->current_file_offset = 0;
+  impl->read_chunk_size = r_chunk;
+  if (cfg->flags & (O_RDONLY | O_RDWR)) impl->triggerReadTask();
   return reinterpret_cast<conveyor_t *>(impl);
 }
 
@@ -239,14 +239,12 @@ int conveyor_flush(conveyor_t *conv) {
 int conveyor_get_stats(conveyor_t *conv, conveyor_stats_t *stats) { return 0; }
 int conveyor_clear_error(conveyor_t* conv) { return 0; }
 
-// --- Zero-Copy Segment Pool API ---
 void* conveyor_get_buffer(conveyor_t* conv, size_t* size) {
     auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
     std::shared_ptr<char[]> seg;
     if (impl->free_write_pool.try_dequeue(seg)) {
         if (size) *size = impl->write_chunk_size;
-        // production would use a real tracking map
-        auto* leak = new std::shared_ptr<char[]>(seg); // Keep alive
+        auto* leak = new std::shared_ptr<char[]>(seg);
         return seg.get();
     }
     return nullptr;
