@@ -46,7 +46,12 @@ struct ConveyorImpl {
   moodycamel::ConcurrentQueue<std::shared_ptr<char[]>> free_write_pool;
   std::atomic<size_t> pool_size{0};
 
-  std::atomic<bool> write_task_running{false};
+  // Submission Coalescing
+  std::mutex submission_mutex;
+  std::shared_ptr<char[]> active_write_segment;
+  size_t active_segment_offset = 0;
+  off_t active_segment_file_start = 0;
+
   std::atomic<bool> write_worker_stop_flag{false};
   std::atomic<int> active_write_tasks{0};
 
@@ -111,6 +116,16 @@ struct ConveyorImpl {
           this->writeWorkerTask();
           active_write_tasks--;
       });
+  }
+
+  void flush_active_segment() {
+      std::lock_guard<std::mutex> lock(submission_mutex);
+      if (active_write_segment && active_segment_offset > 0) {
+          write_queue.enqueue({active_segment_file_start, active_segment_offset, active_write_segment});
+          active_write_segment = nullptr;
+          active_segment_offset = 0;
+          triggerWriteTask();
+      }
   }
 
   void triggerReadTask() {
@@ -261,22 +276,42 @@ ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
   if (impl->stats.last_error_code.load() != 0) { errno = impl->stats.last_error_code.load(); return LIBCONVEYOR_ERROR; }
 
-  // Zero-Copy Submission Principle:
-  // If count is large, we take a segment and hand it off.
-  // Since the iRODS API gives us a const void*, we MUST copy once.
-  // But we copy into a pool buffer without any global mutex.
-  
-  auto buf_ptr = impl->get_free_buffer();
-  if (!buf_ptr) { errno = ENOMEM; return LIBCONVEYOR_ERROR; }
+  const char* in_ptr = static_cast<const char*>(buf);
+  size_t remaining = count;
+  size_t total_written = 0;
 
-  // Copy-In (No central lock!)
-  memcpy(buf_ptr.get(), buf, std::min(count, impl->write_chunk_size));
-  size_t actual_len = std::min(count, impl->write_chunk_size);
+  while (remaining > 0) {
+      std::lock_guard<std::mutex> lock(impl->submission_mutex);
+      
+      if (!impl->active_write_segment) {
+          impl->active_write_segment = impl->get_free_buffer();
+          if (!impl->active_write_segment) {
+              if (total_written > 0) break;
+              errno = ENOMEM; return LIBCONVEYOR_ERROR;
+          }
+          impl->active_segment_offset = 0;
+          impl->active_segment_file_start = impl->current_file_offset.load();
+      }
 
-  impl->write_queue.enqueue({impl->current_file_offset.fetch_add(actual_len), actual_len, buf_ptr});
+      size_t space_left = impl->write_chunk_size - impl->active_segment_offset;
+      size_t chunk_len = std::min(remaining, space_left);
+      
+      memcpy(impl->active_write_segment.get() + impl->active_segment_offset, in_ptr + total_written, chunk_len);
+      
+      impl->active_segment_offset += chunk_len;
+      impl->current_file_offset += chunk_len;
+      total_written += chunk_len;
+      remaining -= chunk_len;
+
+      if (impl->active_segment_offset >= impl->write_chunk_size) {
+          impl->write_queue.enqueue({impl->active_segment_file_start, impl->active_segment_offset, impl->active_write_segment});
+          impl->active_write_segment = nullptr;
+          impl->active_segment_offset = 0;
+          impl->triggerWriteTask();
+      }
+  }
   
-  impl->triggerWriteTask();
-  return actual_len;
+  return total_written;
 }
 
 ssize_t conveyor_read(conveyor_t *conv, void *buf, size_t count) {
@@ -327,6 +362,8 @@ int conveyor_flush(conveyor_t *conv) {
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
   if (!impl->write_buffer_enabled) return 0;
   
+  impl->flush_active_segment();
+
   // Busy wait for queue to drain
   while (impl->write_queue.size_approx() > 0) {
       impl->triggerWriteTask();
