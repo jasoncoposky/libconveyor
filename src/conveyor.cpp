@@ -139,10 +139,17 @@ struct ConveyorImpl {
         read_head_in_storage += bytes_read;
         stats.bytes_read += bytes_read;
       } else if (bytes_read == 0) { read_eof_flag = true; }
+      else { stats.last_error_code = errno; }
       read_cv_consumer.notify_all();
     }
   }
 };
+
+} // namespace libconveyor
+
+using namespace libconveyor;
+
+extern "C" {
 
 conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   if (!cfg) return nullptr;
@@ -154,18 +161,24 @@ conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
   impl->ops = cfg->ops;
   impl->current_file_offset = 0;
   impl->read_chunk_size = r_chunk;
-  if (cfg->flags & (O_RDONLY | O_RDWR)) impl->triggerReadTask();
   return reinterpret_cast<conveyor_t *>(impl);
 }
 
 void conveyor_destroy(conveyor_t *conv) {
   if (!conv) return;
   auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+  conveyor_stop(conv);
+  delete impl;
+}
+
+void conveyor_stop(conveyor_t *conv) {
+  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+  if (!impl) return;
   conveyor_flush(conv);
   impl->write_worker_stop_flag = true;
   impl->read_worker_stop_flag = true;
+  { std::lock_guard<std::mutex> lock(impl->read_mutex); impl->read_cv_consumer.notify_all(); }
   while (impl->active_write_tasks > 0) std::this_thread::yield();
-  delete impl;
 }
 
 ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
@@ -258,4 +271,4 @@ ssize_t conveyor_submit_buffer(conveyor_t* conv, void* buf, size_t size, off_t o
 }
 void conveyor_release_buffer(conveyor_t* conv, void* buf) {}
 
-} // namespace libconveyor
+} // extern "C"
