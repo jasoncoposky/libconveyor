@@ -10,11 +10,6 @@ struct ThreadPool::Impl {
     explicit Impl(size_t threads) : pool(threads) {}
 };
 
-ThreadPool& ThreadPool::instance() {
-    static ThreadPool instance;
-    return instance;
-}
-
 ThreadPool::ThreadPool() {
     size_t threads = std::thread::hardware_concurrency();
     if (threads == 0) threads = 4;
@@ -24,11 +19,15 @@ ThreadPool::ThreadPool() {
 ThreadPool::~ThreadPool() = default;
 
 void ThreadPool::parallel_for(size_t first, size_t last, std::function<void(size_t, size_t)> fn) {
-    pimpl_->pool.template parallelFor<citor::HintsDefaults>(first, last, std::move(fn));
+    if (pimpl_) pimpl_->pool.template parallelFor<citor::HintsDefaults>(first, last, std::move(fn));
 }
 
 void ThreadPool::submit_detached(std::function<void()> fn) {
-    pimpl_->pool.template submitDetached<citor::HintsDefaults>(std::move(fn));
+    if (pimpl_) pimpl_->pool.template submitDetached<citor::HintsDefaults>(std::move(fn));
+}
+
+void ThreadPool::shutdown() {
+    pimpl_.reset();
 }
 
 } // namespace libconveyor

@@ -13,8 +13,8 @@
 
 // --- Configuration ---
 const size_t BLOCK_SIZE = 4096;
-const size_t TOTAL_DATA = 20 * 1024 * 1024; // 20 MB total
-const int SIMULATED_LATENCY_US = 1000;      // 1ms backend latency
+const size_t TOTAL_DATA = 5 * 1024 * 1024; // 5 MB total
+const int SIMULATED_LATENCY_US = 100;      // 100us backend latency
 
 // Mock Storage with Latency
 struct MockStorage {

@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <cstdint>
+#include <iostream>
 
 
 #ifndef O_ACCMODE
@@ -20,104 +22,151 @@
 
 namespace libconveyor {
 
+struct Segment {
+    void* data;
+    off_t file_offset;
+    std::atomic<size_t> cursor;
+    std::atomic<int> ref_count;
+    std::atomic<bool> is_full;
+    std::atomic<bool> is_enqueued;
+    size_t capacity;
+
+    Segment(void* d, size_t cap) 
+        : data(d), file_offset(0), cursor(0), ref_count(0), is_full(false), is_enqueued(false), capacity(cap) {}
+    
+    ~Segment() { if (data) free(data); }
+};
+
+typedef std::shared_ptr<Segment> SegmentPtr;
+
 struct WriteRequest {
-  off_t file_offset;
-  size_t length;
-  void* data; 
+    SegmentPtr segment;
 };
 
 struct ConveyorImpl {
-  storage_handle_t handle;
-  int flags;
-  storage_operations_t ops;
-  size_t write_chunk_size = 32 * 1024 * 1024; 
-  size_t read_chunk_size = 32 * 1024 * 1024;
+    storage_handle_t handle;
+    int flags;
+    storage_operations_t ops;
+    size_t write_chunk_size = 32 * 1024 * 1024;
+    size_t read_chunk_size = 32 * 1024 * 1024;
 
-  moodycamel::ConcurrentQueue<void*> free_write_pool;
-  moodycamel::ConcurrentQueue<WriteRequest> write_queue;
-  
-  void* active_seg = nullptr;
-  size_t active_cursor = 0;
-  off_t active_file_start = 0;
-  std::mutex rotation_mutex;
+    moodycamel::ConcurrentQueue<SegmentPtr> free_segments;
+    moodycamel::ConcurrentQueue<WriteRequest> write_queue;
 
-  std::atomic<bool> write_worker_stop_flag{false};
-  std::atomic<int> active_write_tasks{0};
-  std::atomic<off_t> current_file_offset{0};
+    std::mutex rotation_mutex;
+    SegmentPtr active_segment; // Guarded by rotation_mutex
 
-  RingBuffer read_buffer;
-  std::mutex read_mutex;
-  std::condition_variable read_cv_consumer;
-  std::atomic<bool> read_task_running{false};
-  std::atomic<bool> read_worker_stop_flag{false};
-  std::atomic<bool> read_eof_flag{false};
-  std::atomic<off_t> read_head_in_storage{0};
+    std::atomic<bool> write_worker_stop_flag{false};
+    std::atomic<int> active_write_tasks{0};
+    std::atomic<off_t> current_file_offset{0};
+    std::atomic<off_t> logical_append_pos{0};
 
-  struct {
-    std::atomic<size_t> bytes_written{0};
-    std::atomic<size_t> bytes_read{0};
-    std::atomic<int> last_error_code{0};
-  } stats;
+    std::unique_ptr<ThreadPool> thread_pool;
 
-  ConveyorImpl(size_t w_cap, size_t r_cap, size_t w_chunk)
-      : read_buffer(r_cap), write_chunk_size(w_chunk) {
-      size_t num_segments = std::min((size_t)256, std::max((size_t)1, w_cap / w_chunk));
-      for (size_t i = 0; i < num_segments; ++i) {
-          void* raw_ptr = nullptr;
-          if (posix_memalign(&raw_ptr, 4096, w_chunk) == 0) {
-              std::memset(raw_ptr, 0, w_chunk);
-              free_write_pool.enqueue(raw_ptr);
-          }
-      }
-  }
-  
-  ~ConveyorImpl() {
-      void* ptr;
-      while(free_write_pool.try_dequeue(ptr)) free(ptr);
-  }
+    RingBuffer read_buffer;
+    std::mutex read_mutex;
+    std::condition_variable read_cv_consumer;
+    std::atomic<bool> read_task_running{false};
+    std::atomic<bool> read_worker_stop_flag{false};
+    std::atomic<bool> read_eof_flag{false};
+    std::atomic<off_t> read_head_in_storage{0};
 
-  void triggerWriteTask() {
-      if (active_write_tasks.load(std::memory_order_relaxed) > 16) return; 
-      if (active_write_tasks.fetch_add(1) <= 16) {
-          ThreadPool::instance().submit_detached([this]() {
-              this->writeWorkerTask();
-              active_write_tasks.fetch_sub(1);
-          });
-      } else { active_write_tasks.fetch_sub(1); }
-  }
+    struct {
+        std::atomic<size_t> bytes_written{0};
+        std::atomic<size_t> bytes_read{0};
+        std::atomic<int> last_error_code{0};
+    } stats;
 
-  void writeWorkerTask() {
-    while (true) {
-      WriteRequest req;
-      if (!write_queue.try_dequeue(req)) break;
-      ssize_t written = ops.pwrite(handle, req.data, req.length, req.file_offset);
-      if (written == (ssize_t)req.length) {
-          stats.bytes_written += written;
-      } else { stats.last_error_code = (written < 0) ? errno : EIO; }
-      free_write_pool.enqueue(req.data);
+    ConveyorImpl(size_t w_cap, size_t r_cap, size_t w_chunk)
+        : read_buffer(r_cap ? r_cap : 1), write_chunk_size(w_chunk) {
+        
+        thread_pool = std::make_unique<ThreadPool>();
+
+        size_t num_segments = std::min((size_t)256, std::max((size_t)1, w_cap / w_chunk));
+        for (size_t i = 0; i < num_segments; ++i) {
+            void* raw_ptr = nullptr;
+            if (posix_memalign(&raw_ptr, 4096, w_chunk) == 0) {
+                std::memset(raw_ptr, 0, w_chunk);
+                free_segments.enqueue(std::make_shared<Segment>(raw_ptr, w_chunk));
+            }
+        }
     }
-  }
 
-  void readWorkerTask() {
-    auto temp_buffer = std::make_unique<char[]>(read_chunk_size);
-    while (true) {
-      std::unique_lock<std::mutex> lock(read_mutex);
-      if (read_buffer.available_space() == 0 || read_eof_flag.load() || read_worker_stop_flag.load()) {
-        read_task_running = false; break;
-      }
-      off_t read_pos = read_head_in_storage.load();
-      size_t n = std::min(read_chunk_size, read_buffer.available_space());
-      lock.unlock();
-      ssize_t bytes_read = ops.pread(handle, temp_buffer.get(), n, read_pos);
-      lock.lock();
-      if (bytes_read > 0) {
-        read_buffer.write(temp_buffer.get(), (size_t)bytes_read);
-        read_head_in_storage += bytes_read;
-        stats.bytes_read += bytes_read;
-      } else if (bytes_read == 0) { read_eof_flag = true; }
-      read_cv_consumer.notify_all();
+    ~ConveyorImpl() {
+        write_worker_stop_flag = true;
+        read_worker_stop_flag = true;
+        
+        while (active_write_tasks.load() > 0) {
+            std::this_thread::yield();
+        }
+        
+        if (thread_pool) {
+            thread_pool->shutdown();
+            thread_pool.reset();
+        }
     }
-  }
+
+    void triggerWriteTask() {
+        if (write_queue.size_approx() == 0) return;
+        if (active_write_tasks.load(std::memory_order_relaxed) > 32) return;
+        active_write_tasks.fetch_add(1);
+        thread_pool->submit_detached([this]() {
+            this->writeWorkerTask();
+            active_write_tasks.fetch_sub(1);
+        });
+    }
+
+    void writeWorkerTask() {
+        while (true) {
+            WriteRequest req;
+            if (!write_queue.try_dequeue(req)) {
+                if (write_worker_stop_flag.load()) break;
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                if (!write_queue.size_approx()) break; 
+                continue;
+            }
+            SegmentPtr seg = req.segment;
+            if (!seg || !seg->data) continue;
+
+            ssize_t written = ops.pwrite(handle, seg->data, seg->cursor.load(), seg->file_offset);
+            if (written == (ssize_t)seg->cursor.load()) {
+                stats.bytes_written += (size_t)written;
+            } else { 
+                stats.last_error_code = (written < 0) ? errno : EIO; 
+            }
+
+            seg->cursor = 0;
+            seg->is_full = false;
+            seg->is_enqueued = false;
+            seg->ref_count = 0;
+            free_segments.enqueue(seg);
+        }
+    }
+
+    void readWorkerTask() {
+        if (read_buffer.capacity <= 1) {
+            read_task_running = false;
+            return;
+        }
+        auto temp_buffer = std::make_unique<char[]>(read_chunk_size);
+        while (true) {
+            std::unique_lock<std::mutex> lock(read_mutex);
+            if (read_buffer.available_space() == 0 || read_eof_flag.load() || read_worker_stop_flag.load()) {
+                read_task_running = false; break;
+            }
+            off_t read_pos = read_head_in_storage.load();
+            size_t n = std::min(read_chunk_size, read_buffer.available_space());
+            lock.unlock();
+            ssize_t bytes_read = ops.pread(handle, temp_buffer.get(), n, read_pos);
+            lock.lock();
+            if (bytes_read > 0) {
+                read_buffer.write(temp_buffer.get(), (size_t)bytes_read);
+                read_head_in_storage += (off_t)bytes_read;
+                stats.bytes_read += (size_t)bytes_read;
+            } else if (bytes_read == 0) { read_eof_flag = true; }
+            read_cv_consumer.notify_all();
+        }
+    }
 };
 
 } // namespace libconveyor
@@ -127,113 +176,220 @@ using namespace libconveyor;
 extern "C" {
 
 conveyor_t *conveyor_create(const conveyor_config_t *cfg) {
-  if (!cfg) return nullptr;
-  size_t w_chunk = (cfg->write_chunk_size > 0) ? cfg->write_chunk_size : 32 * 1024 * 1024;
-  auto *impl = new ConveyorImpl(cfg->initial_write_size, cfg->initial_read_size, w_chunk);
-  impl->handle = cfg->handle;
-  impl->flags = cfg->flags;
-  impl->ops = cfg->ops;
-  impl->current_file_offset = 0;
-  return reinterpret_cast<conveyor_t *>(impl);
+    if (!cfg) return nullptr;
+    size_t w_chunk = (cfg->write_chunk_size > 0) ? cfg->write_chunk_size : 32 * 1024 * 1024;
+    auto *impl = new ConveyorImpl(cfg->initial_write_size, cfg->initial_read_size, w_chunk);
+    impl->handle = cfg->handle;
+    impl->flags = cfg->flags;
+    impl->ops = cfg->ops;
+
+    if (impl->flags & O_APPEND) {
+        impl->logical_append_pos = impl->ops.lseek(impl->handle, 0, SEEK_END);
+        impl->current_file_offset = impl->logical_append_pos.load();
+    } else {
+        impl->current_file_offset = impl->ops.lseek(impl->handle, 0, SEEK_CUR);
+    }
+    impl->read_head_in_storage = impl->current_file_offset.load();
+    return reinterpret_cast<conveyor_t *>(impl);
 }
 
 void conveyor_destroy(conveyor_t *conv) {
-  if (!conv) return;
-  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  conveyor_flush(conv);
-  impl->write_worker_stop_flag = true;
-  impl->read_worker_stop_flag = true;
-  while (impl->active_write_tasks > 0) std::this_thread::yield();
-  delete impl;
+    if (!conv) return;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    conveyor_flush(conv);
+    delete impl;
 }
 
 void conveyor_stop(conveyor_t *conv) {}
 
 ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
-  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  const char* in_ptr = static_cast<const char*>(buf);
-  size_t total_written = 0;
-  const size_t w_chunk = impl->write_chunk_size;
-  while (total_written < count) {
-      size_t remaining = count - total_written;
-      std::lock_guard<std::mutex> lock(impl->rotation_mutex);
-      if (!impl->active_seg || impl->active_cursor >= w_chunk) {
-          if (impl->active_seg) {
-              impl->write_queue.enqueue({impl->active_file_start, impl->active_cursor, impl->active_seg});
-              impl->triggerWriteTask();
-          }
-          void* new_ptr;
-          if (!impl->free_write_pool.try_dequeue(new_ptr)) break;
-          impl->active_seg = new_ptr;
-          impl->active_cursor = 0;
-          impl->active_file_start = impl->current_file_offset.load();
-      }
-      size_t chunk = std::min(remaining, w_chunk - impl->active_cursor);
-      std::memcpy((char*)impl->active_seg + impl->active_cursor, in_ptr + total_written, chunk);
-      impl->active_cursor += chunk;
-      impl->current_file_offset += chunk;
-      total_written += chunk;
-  }
-  return total_written;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    if (!buf || count == 0) return 0;
+    if (count > impl->write_chunk_size) {
+        errno = EMSGSIZE;
+        return LIBCONVEYOR_ERROR;
+    }
+    const char* in_ptr = static_cast<const char*>(buf);
+    size_t total_written = 0;
+
+    while (total_written < count) {
+        SegmentPtr seg;
+        {
+            std::lock_guard<std::mutex> lock(impl->rotation_mutex);
+            seg = impl->active_segment;
+            if (!seg || seg->is_full.load(std::memory_order_relaxed)) {
+                if (seg) {
+                    seg->is_full = true;
+                    if (seg->ref_count.load() == 0 && !seg->is_enqueued.exchange(true)) {
+                        impl->write_queue.enqueue({seg});
+                        impl->triggerWriteTask();
+                    }
+                }
+                if (!impl->free_segments.try_dequeue(seg)) break;
+                seg->file_offset = (impl->flags & O_APPEND) ? impl->logical_append_pos.load() : impl->current_file_offset.load();
+                seg->cursor = 0;
+                seg->ref_count = 0;
+                seg->is_full = false;
+                seg->is_enqueued = false;
+                impl->active_segment = seg;
+            }
+        }
+
+        size_t remaining = count - total_written;
+        size_t current_cursor = seg->cursor.load(std::memory_order_relaxed);
+        size_t reservation = std::min(remaining, (seg->capacity > current_cursor) ? (seg->capacity - current_cursor) : 0);
+
+        if (reservation == 0) {
+            seg->is_full = true;
+            continue;
+        }
+
+        size_t offset_in_seg = seg->cursor.fetch_add(reservation);
+        if (offset_in_seg + reservation > seg->capacity) {
+            seg->is_full = true;
+            continue;
+        }
+
+        seg->ref_count.fetch_add(1);
+        std::memcpy((char*)seg->data + offset_in_seg, in_ptr + total_written, reservation);
+        total_written += reservation;
+        
+        impl->current_file_offset.fetch_add((off_t)reservation);
+        if (impl->flags & O_APPEND) impl->logical_append_pos.fetch_add((off_t)reservation);
+
+        if (seg->ref_count.fetch_sub(1) == 1 && seg->is_full.load()) {
+            if (!seg->is_enqueued.exchange(true)) {
+                impl->write_queue.enqueue({seg});
+                impl->triggerWriteTask();
+            }
+        }
+    }
+    return (ssize_t)total_written;
 }
 
 ssize_t conveyor_read(conveyor_t *conv, void *buf, size_t count) {
-  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  char *ptr = static_cast<char *>(buf);
-  ssize_t total_read = 0;
-  std::unique_lock<std::mutex> read_lock(impl->read_mutex);
-  while (total_read < count && !impl->read_worker_stop_flag.load()) {
-    if (impl->read_buffer.empty()) {
-      if (impl->read_eof_flag.load()) break;
-      { auto *impl2 = impl; ThreadPool::instance().submit_detached([impl2]() { impl2->readWorkerTask(); }); }
-      impl->read_cv_consumer.wait(read_lock, [&] { return impl->read_buffer.available_data() > 0 || impl->read_worker_stop_flag.load(); });
-      if (impl->read_buffer.empty()) break;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    if (impl->read_buffer.capacity <= 1) {
+        errno = EINVAL; // Or appropriate error for 0-byte read buffer
+        return LIBCONVEYOR_ERROR;
     }
-    total_read += impl->read_buffer.read(ptr + total_read, count - total_read);
-  }
-  return total_read;
+    char *ptr = static_cast<char *>(buf);
+    ssize_t total_read = 0;
+    
+    off_t read_start_offset = impl->current_file_offset.load();
+
+    std::unique_lock<std::mutex> read_lock(impl->read_mutex);
+    while (total_read < (ssize_t)count && !impl->read_worker_stop_flag.load()) {
+        if (impl->read_buffer.empty()) {
+            if (impl->read_eof_flag.load()) break;
+            impl->thread_pool->submit_detached([impl]() { impl->readWorkerTask(); });
+            impl->read_cv_consumer.wait(read_lock, [&] { 
+                return impl->read_buffer.available_data() > 0 || impl->read_worker_stop_flag.load(); 
+            });
+            if (impl->read_buffer.empty()) break;
+        }
+        total_read += (ssize_t)impl->read_buffer.read(ptr + total_read, count - (size_t)total_read);
+    }
+    read_lock.unlock();
+
+    if (total_read <= 0) return total_read;
+
+    SegmentPtr active;
+    {
+        std::lock_guard<std::mutex> lock(impl->rotation_mutex);
+        active = impl->active_segment;
+    }
+    
+    if (active) {
+        off_t seg_start = active->file_offset;
+        size_t seg_len = active->cursor.load(std::memory_order_relaxed);
+        
+        off_t overlap_start = std::max(read_start_offset, seg_start);
+        off_t overlap_end = std::min(read_start_offset + total_read, seg_start + (off_t)seg_len);
+        
+        if (overlap_start < overlap_end) {
+            size_t dest_offset = (size_t)(overlap_start - read_start_offset);
+            size_t src_offset = (size_t)(overlap_start - seg_start);
+            size_t copy_len = (size_t)(overlap_end - overlap_start);
+            std::memcpy(ptr + dest_offset, (char*)active->data + src_offset, copy_len);
+        }
+    }
+
+    return total_read;
 }
 
 off_t conveyor_lseek(conveyor_t *conv, off_t offset, int whence) {
-  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  impl->current_file_offset = offset;
-  return offset;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    impl->current_file_offset = offset;
+    return offset;
 }
 
 int conveyor_flush(conveyor_t *conv) {
-  auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-  std::lock_guard<std::mutex> lock(impl->rotation_mutex);
-  if (impl->active_seg && impl->active_cursor > 0) {
-      impl->write_queue.enqueue({impl->active_file_start, impl->active_cursor, impl->active_seg});
-      impl->active_seg = nullptr;
-      impl->active_cursor = 0;
-      impl->triggerWriteTask();
-  }
-  while (impl->write_queue.size_approx() > 0) { impl->triggerWriteTask(); std::this_thread::yield(); }
-  return 0;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    {
+        std::lock_guard<std::mutex> lock(impl->rotation_mutex);
+        SegmentPtr seg = impl->active_segment;
+        if (seg && seg->cursor.load() > 0) {
+            seg->is_full = true;
+            impl->active_segment = nullptr;
+            if (seg->ref_count.load() == 0 && !seg->is_enqueued.exchange(true)) {
+                impl->write_queue.enqueue({seg});
+                impl->triggerWriteTask();
+            }
+        }
+    }
+    while (impl->write_queue.size_approx() > 0 || impl->active_write_tasks.load() > 0) {
+        impl->triggerWriteTask();
+        std::this_thread::yield();
+    }
+    return (impl->stats.last_error_code.load() != 0) ? LIBCONVEYOR_ERROR : 0;
 }
 
-int conveyor_get_stats(conveyor_t *conv, conveyor_stats_t *stats) { return 0; }
-int conveyor_clear_error(conveyor_t* conv) { return 0; }
+int conveyor_get_stats(conveyor_t *conv, conveyor_stats_t *stats) {
+    if (!conv || !stats) return -1;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    stats->bytes_written = impl->stats.bytes_written.exchange(0);
+    stats->bytes_read = impl->stats.bytes_read.exchange(0);
+    stats->last_error_code = impl->stats.last_error_code.exchange(0);
+    stats->avg_write_latency_ms = 0;
+    stats->avg_read_latency_ms = 0;
+    stats->write_buffer_full_events = 0;
+    return 0;
+}
+
+int conveyor_clear_error(conveyor_t* conv) {
+    if (!conv) return -1;
+    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
+    impl->stats.last_error_code = 0;
+    return 0;
+}
 
 void* conveyor_get_buffer(conveyor_t* conv, size_t* size) {
     auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-    void* ptr;
-    if (impl->free_write_pool.try_dequeue(ptr)) {
-        if (size) *size = impl->write_chunk_size;
-        return ptr;
+    SegmentPtr seg;
+    if (impl->free_segments.try_dequeue(seg)) {
+        if (size) *size = seg->capacity;
+        seg->cursor = 0;
+        seg->ref_count = 1; 
+        seg->is_full = false;
+        return seg->data; 
     }
     return nullptr;
 }
+
 ssize_t conveyor_submit_buffer(conveyor_t* conv, void* buf, size_t size, off_t offset) {
     auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-    impl->write_queue.enqueue({offset, size, buf});
+    SegmentPtr seg = std::make_shared<Segment>(buf, size);
+    seg->cursor = size;
+    seg->file_offset = offset;
+    seg->is_full = true;
+    seg->is_enqueued = true;
+    impl->write_queue.enqueue({seg});
     impl->triggerWriteTask();
     return (ssize_t)size;
 }
+
 void conveyor_release_buffer(conveyor_t* conv, void* buf) {
-    auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
-    impl->free_write_pool.enqueue(buf);
 }
 
 } // extern "C"
