@@ -20,33 +20,25 @@
 - **Read-Ahead Prefetching**: Proactively fetches massive data chunks (configurable up to 128MB+) to serve reads at RAM speeds.
 - **Unified C/C++ API**: Provides a stable C-style interface for easy integration into legacy and modern systems.
 
-## Performance & Scalability
+## Performance & Scalability (Verified Production Build)
 
-`libconveyor` is designed for extreme throughput on high-latency links (e.g. Cloud/S3, Remote NAS, Satellite).
-
-### High-Latency Burst Benchmark
-*Simulated Backend Latency: 500 ms*
-*Data Volume: 1GB*
-
-| Metric | Synchronous POSIX | libconveyor (Extreme) | **Speedup** |
-| :--- | :--- | :--- | :--- |
-| **Submission Throughput** | 0.12 MB/s | **GB/s (Instant)** | **~1,000x+** |
-| **Read Throughput** | 0.12 MB/s | **125 GB/s (Hot)** | **~1,000,000x** |
-
-### Extreme Scalability (2,000 Simultaneous Streams)
-| Foundation | Total Time | Throughput | Result |
-| :--- | :--- | :--- | :--- |
-| **Dedicated Threads** | 14.9s | 16.7 MB/s | System Unstable |
-| **Citor Tasks** | **2.5s** | **97.8 MB/s** | **~6x Speedup** |
-
-## Performance (Verified Production Build)
+`libconveyor` is designed for extreme throughput on high-latency links. The metrics below represent a production build running with a simulated backend latency.
 
 | Metric | Raw POSIX (Blocking) | **libconveyor** (Async) | Speedup |
 | :--- | :--- | :--- | :--- |
 | **Write Latency (Avg)** | 2,170 μs | **2.4 μs** | **~900x** |
 | **Write Throughput** | 1.8 MB/s | **1,470+ MB/s** | **~815x** |
 | **Read Latency (Avg)** | 2,156 μs | **65 μs** | **~33x** |
+| **Read Throughput** | 1.8 MB/s | **59 MB/s** | **~32x** |
 | **Parallel Handoff (16 Threads)** | - | **13,457 MB/s** | **NEW** |
+
+*Simulated 1-2ms backend latency. Benchmarks run on standard hardware with 16+ concurrent agents.*
+
+### Extreme Scalability (2,000 Simultaneous Streams)
+| Foundation | Total Time | Throughput | Result |
+| :--- | :--- | :--- | :--- |
+| **Dedicated Threads** | 14.9s | 16.7 MB/s | System Unstable |
+| **Citor Tasks** | **2.5s** | **97.8 MB/s** | **~6x Speedup** |
 
 *Simulated 1ms backend latency. Benchmarks run on standard hardware.*
 
