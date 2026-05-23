@@ -13,7 +13,6 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
-#include <iostream>
 
 
 #ifndef O_ACCMODE
@@ -49,6 +48,8 @@ struct ConveyorImpl {
     storage_operations_t ops;
     size_t write_chunk_size = 32 * 1024 * 1024;
     size_t read_chunk_size = 32 * 1024 * 1024;
+    size_t max_write_capacity = 0;
+    std::atomic<size_t> current_write_capacity{0};
 
     moodycamel::ConcurrentQueue<SegmentPtr> free_segments;
     moodycamel::ConcurrentQueue<WriteRequest> write_queue;
@@ -61,7 +62,7 @@ struct ConveyorImpl {
     std::atomic<off_t> current_file_offset{0};
     std::atomic<off_t> logical_append_pos{0};
 
-    std::unique_ptr<ThreadPool> thread_pool;
+    std::shared_ptr<ThreadPool> thread_pool;
 
     RingBuffer read_buffer;
     std::mutex read_mutex;
@@ -78,17 +79,12 @@ struct ConveyorImpl {
     } stats;
 
     ConveyorImpl(size_t w_cap, size_t r_cap, size_t w_chunk)
-        : read_buffer(r_cap ? r_cap : 1), write_chunk_size(w_chunk) {
+        : read_buffer(r_cap ? r_cap : 1), write_chunk_size(w_chunk), max_write_capacity(w_cap) {
         
-        thread_pool = std::make_unique<ThreadPool>();
+        thread_pool = ThreadPool::get_shared_instance();
 
-        size_t num_segments = std::min((size_t)256, std::max((size_t)1, w_cap / w_chunk));
-        for (size_t i = 0; i < num_segments; ++i) {
-            void* raw_ptr = nullptr;
-            if (posix_memalign(&raw_ptr, 4096, w_chunk) == 0) {
-                std::memset(raw_ptr, 0, w_chunk);
-                free_segments.enqueue(std::make_shared<Segment>(raw_ptr, w_chunk));
-            }
+        if (w_cap > 0) {
+            allocate_and_enqueue_segment();
         }
     }
 
@@ -96,14 +92,24 @@ struct ConveyorImpl {
         write_worker_stop_flag = true;
         read_worker_stop_flag = true;
         
+        // Ensure flushes are done
         while (active_write_tasks.load() > 0) {
             std::this_thread::yield();
         }
         
-        if (thread_pool) {
-            thread_pool->shutdown();
-            thread_pool.reset();
+        // shared_ptr cleanup will handle ThreadPool if this is the last instance
+    }
+
+    bool allocate_and_enqueue_segment() {
+        if (current_write_capacity.load() >= max_write_capacity && max_write_capacity > 0) return false;
+        
+        void* raw_ptr = nullptr;
+        if (posix_memalign(&raw_ptr, 4096, write_chunk_size) == 0) {
+            free_segments.enqueue(std::make_shared<Segment>(raw_ptr, write_chunk_size));
+            current_write_capacity.fetch_add(write_chunk_size);
+            return true;
         }
+        return false;
     }
 
     void triggerWriteTask() {
@@ -225,7 +231,11 @@ ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
                         impl->triggerWriteTask();
                     }
                 }
-                if (!impl->free_segments.try_dequeue(seg)) break;
+                if (!impl->free_segments.try_dequeue(seg)) {
+                    if (!impl->allocate_and_enqueue_segment() || !impl->free_segments.try_dequeue(seg)) {
+                        break; 
+                    }
+                }
                 seg->file_offset = (impl->flags & O_APPEND) ? impl->logical_append_pos.load() : impl->current_file_offset.load();
                 seg->cursor = 0;
                 seg->ref_count = 0;
@@ -270,7 +280,7 @@ ssize_t conveyor_write(conveyor_t *conv, const void* buf, size_t count) {
 ssize_t conveyor_read(conveyor_t *conv, void *buf, size_t count) {
     auto *impl = reinterpret_cast<ConveyorImpl *>(conv);
     if (impl->read_buffer.capacity <= 1) {
-        errno = EINVAL; // Or appropriate error for 0-byte read buffer
+        errno = EINVAL;
         return LIBCONVEYOR_ERROR;
     }
     char *ptr = static_cast<char *>(buf);

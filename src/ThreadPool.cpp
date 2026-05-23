@@ -1,8 +1,15 @@
 #include "libconveyor/detail/ThreadPool.hpp"
 #include <citor.hpp>
 #include <thread>
+#include <mutex>
 
 namespace libconveyor {
+
+// Use a true persistent singleton to avoid destruction races in citor
+std::shared_ptr<ThreadPool> ThreadPool::get_shared_instance() {
+    static std::shared_ptr<ThreadPool> instance = std::make_shared<ThreadPool>();
+    return instance;
+}
 
 struct ThreadPool::Impl {
     citor::ThreadPool pool;
@@ -27,6 +34,7 @@ void ThreadPool::submit_detached(std::function<void()> fn) {
 }
 
 void ThreadPool::shutdown() {
+    // For a persistent singleton, shutdown is rarely needed but we keep it for completeness
     pimpl_.reset();
 }
 
