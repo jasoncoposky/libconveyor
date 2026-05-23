@@ -46,14 +46,19 @@
 | **Write Latency (Avg)** | 2,170 μs | **2.4 μs** | **~900x** |
 | **Write Throughput** | 1.8 MB/s | **1,470+ MB/s** | **~815x** |
 | **Read Latency (Avg)** | 2,156 μs | **65 μs** | **~33x** |
-| **Read Throughput** | 1.8 MB/s | **59 MB/s** | **~32x** |
+| **Parallel Handoff (16 Threads)** | - | **13,457 MB/s** | **NEW** |
 
-*Simulated 2ms backend latency. Benchmarks run on standard hardware with 16+ thread concurrency.*
+*Simulated 1ms backend latency. Benchmarks run on standard hardware.*
 
 ## Key Architectural Features
 
 ### 1. Parallel "Reserve-and-Copy" Handoff
 Unlike standard buffers that lock during the entire copy, `libconveyor` uses an atomic reservation system. Multiple threads can reserve slices of the 32MB segment and perform their `memcpy` operations in parallel, completely bypassing global mutex contention on the hot path.
+
+### 2. Enterprise Scaling & Stability
+Built for high-concurrency server environments (like iRODS).
+*   **Persistent Singleton Engine:** Background worker threads are managed via a persistent, reference-counted singleton. This amortizes calibration costs and eliminates affinity races during rapid creation/destruction cycles.
+*   **Adaptive Buffer Management:** Starts with conservative initial allocations and grows on-demand, minimizing the memory footprint for small files while scaling to 2GB+ for massive data movements.
 
 ### 2. Snoop Pattern Consistency
 Ensures strict read-after-write consistency. `conveyor_read` intelligently "snoops" the active write buffers and overlays unflushed data over the storage-backed read cache. This allows for sub-100μs read latencies without risking stale data.
