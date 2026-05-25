@@ -147,3 +147,15 @@ target_include_directories(conveyor_multi_instance_test PRIVATE
 )
 
 add_test(NAME ConveyorMultiInstanceTest COMMAND conveyor_multi_instance_test)
+
+add_executable(coverage_extension_test coverage_extension_test.cpp)
+target_link_libraries(coverage_extension_test PRIVATE
+    conveyor
+    gtest
+    gmock
+    gtest_main
+)
+target_include_directories(coverage_extension_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+add_test(NAME CoverageExtensionTest COMMAND coverage_extension_test)

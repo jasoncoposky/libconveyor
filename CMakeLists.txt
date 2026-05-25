@@ -22,6 +22,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(concurrentqueue)
 
+option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
+if(ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(--coverage -O0 -g)
+        add_link_options(--coverage)
+    endif()
+endif()
+
 # Define the library
 add_library(conveyor STATIC
     src/conveyor.cpp
