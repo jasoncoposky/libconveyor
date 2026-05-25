@@ -52,10 +52,10 @@ Built for high-concurrency server environments (like iRODS).
 *   **Persistent Singleton Engine:** Background worker threads are managed via a persistent, reference-counted singleton. This amortizes calibration costs and eliminates affinity races during rapid creation/destruction cycles.
 *   **Adaptive Buffer Management:** Starts with conservative initial allocations and grows on-demand, minimizing the memory footprint for small files while scaling to 2GB+ for massive data movements.
 
-### 2. Snoop Pattern Consistency
+### 3. Snoop Pattern Consistency
 Ensures strict read-after-write consistency. `conveyor_read` intelligently "snoops" the active write buffers and overlays unflushed data over the storage-backed read cache. This allows for sub-100μs read latencies without risking stale data.
 
-### 3. Shared Ownership & Robust Lifecycle
+### 4. Shared Ownership & Robust Lifecycle
 Built for mission-critical services.
 *   **Memory Safety:** Uses a shared-ownership model for I/O segments to eliminate race-induced use-after-free or double-free scenarios.
 *   **Deterministic Shutdown:** Instance-owned thread pools ensure clean teardown without static destructor races or affinity conflicts.
