@@ -27,12 +27,12 @@
 | Metric | Raw POSIX (Blocking) | **libconveyor** (Async) | Speedup |
 | :--- | :--- | :--- | :--- |
 | **Write Latency (Avg)** | 2,170 μs | **2.4 μs** | **~900x** |
-| **Write Throughput** | 1.8 MB/s | **1,470+ MB/s** | **~815x** |
+| **Handoff Throughput (Burst)** | 1.8 MB/s | **1,470+ MB/s** | **~815x** |
+| **Parallel Handoff (16 Threads)** | - | **13,457 MB/s** | **13.4 GB/s** |
 | **Read Latency (Avg)** | 2,156 μs | **65 μs** | **~33x** |
-| **Read Throughput** | 1.8 MB/s | **59 MB/s** | **~32x** |
-| **Parallel Handoff (16 Threads)** | - | **13,457 MB/s** | **NEW** |
+| **Read Throughput** | 1.8 MB/s | **63 MB/s** | **~35x** |
 
-*Simulated 1-2ms backend latency. Benchmarks run on standard hardware with 16+ concurrent agents.*
+*Simulated 1-2ms backend latency. Benchmarks run on standard hardware with 16+ concurrent agents. Handoff throughput reflects the speed of the "Implementation Firewall" (application-to-conveyor move) before background flushing.*
 
 ### Extreme Scalability (2,000 Simultaneous Streams)
 | Foundation | Total Time | Throughput | Result |
